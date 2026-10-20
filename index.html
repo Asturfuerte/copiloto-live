@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Copiloto Live</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Serif:wght@600&family=IBM+Plex+Mono:wght@500&display=swap">
+<style>
+:root {
+  --bg: #f3f5f8; --surface: #fff; --ink: #1b2533; --muted: #5d6b7e; --line: #d9dfe7;
+  --accent: #23466e; --ok: #2e9b5a; --warn: #9a6200; --err: #b0302a; --resp: #5b4a9c; --resp-bg: #eeebf8;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) { :root {
+  --bg: #121820; --surface: #1a222d; --ink: #e5eaf1; --muted: #93a1b4; --line: #2c3746; --accent: #8fb4dd;
+  --warn: #e7b04f; --err: #f08a82; --resp: #b5a6f0; --resp-bg: #241f3a; color-scheme: dark } }
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 16px/1.5 "IBM Plex Sans", system-ui, sans-serif;
+  padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) 32px max(16px, env(safe-area-inset-left)); }
+.wrap { max-width: 720px; margin: 0 auto; display: grid; gap: 16px; }
+h1 { font-family: "IBM Plex Serif", Georgia, serif; color: var(--accent); margin: 0; font-size: 1.6rem; }
+.sub { margin: 0; color: var(--muted); }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; display: grid; gap: 12px; }
+.big { font: inherit; font-weight: 600; font-size: 1.15rem; border: 0; border-radius: 12px; padding: 18px; width: 100%; background: var(--accent); color: var(--surface); cursor: pointer; }
+.big.on { background: var(--err); }
+.status { display: flex; align-items: center; gap: 10px; font-family: "IBM Plex Mono", monospace; font-size: .85rem; color: var(--muted); }
+.dot { width: 12px; height: 12px; border-radius: 50%; background: var(--muted); flex: none; }
+.status[data-s="on"] .dot { background: var(--ok); animation: pulse 1.6s infinite; }
+.status[data-s="busy"] .dot { background: var(--warn); }
+.status[data-s="talk"] .dot { background: var(--resp); }
+@keyframes pulse { 50% { opacity: .35; } }
+.modes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.modes label { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; cursor: pointer; display: grid; gap: 2px; }
+.modes small { color: var(--muted); }
+h2 { font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0; }
+.live { min-height: 2.5em; color: var(--muted); font-style: italic; }
+.transcript { max-height: 32vh; overflow-y: auto; font-size: .95rem; display: grid; gap: 6px; }
+.t { padding: 6px 10px; border-radius: 8px; background: var(--bg); }
+.t.ai { background: var(--resp-bg); border-left: 3px solid var(--resp); }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.small { font: inherit; font-size: .9rem; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }
+.hint { font-size: .85rem; color: var(--muted); margin: 0; }
+input[type=password], select { font: inherit; font-size: 16px; padding: 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+input[type=password] { width: 100%; }
+.err { color: var(--err); font-size: .9rem; margin: 0; }
+.meter { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+.meter > div { height: 100%; width: 0; background: var(--ok); transition: width .08s; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div>
+    <h1>Copiloto Live</h1>
+    <p class="sub">Escucha y habla en tiempo real, como una persona más. Puedes interrumpirle. <span style="font-family:'IBM Plex Mono',monospace;font-size:.75rem">v1</span></p>
+  </div>
+
+  <section class="panel" id="pinBox" hidden>
+    <h2>Acceso</h2>
+    <input type="password" id="pin" placeholder="PIN de acceso" autocomplete="current-password">
+    <button class="small" id="pinOk">Entrar</button>
+  </section>
+
+  <section class="panel">
+    <button class="big" id="go">Empezar</button>
+    <div class="status" id="status" data-s="off"><span class="dot"></span><span id="statusText">Parado</span></div>
+    <div class="meter"><div id="meter"></div></div>
+    <p class="err" id="err" hidden></p>
+    <div class="modes">
+      <label><span><input type="radio" name="modo" value="participante" checked> Participante</span><small>Charla, corrige y aporta</small></label>
+      <label><span><input type="radio" name="modo" value="copiloto"> Copiloto</span><small>Solo corrige o si le hablan</small></label>
+    </div>
+    <div class="row">
+      <label class="hint">Voz <select id="voz"><option>Aoede</option><option>Kore</option><option>Leda</option><option>Zephyr</option><option>Puck</option><option>Charon</option><option>Fenrir</option><option>Orus</option></select></label>
+      <label class="hint"><input type="checkbox" id="mute"> Modo soplador (solo texto)</label>
+    </div>
+    <p class="hint" id="info"></p>
+  </section>
+
+  <section class="panel">
+    <h2>Conversación</h2>
+    <div class="transcript" id="transcript"></div>
+    <div class="live" id="liveIn">—</div>
+  </section>
+</div>
+
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  let pin = ''; try { pin = localStorage.getItem('copiloto_pin') || ''; } catch (e) {}
+
+  let ws = null, actx = null, micStream = null, proc = null, srcNode = null, running = false;
+  let playAt = 0; const scheduled = [];
+  let curIn = '', curOut = '', inEl = null, outEl = null;
+
+  function status(s, t) { $('status').dataset.s = s; $('statusText').textContent = t; }
+  function showErr(t) { $('err').textContent = t; $('err').hidden = !t; }
+  function modo() { return document.querySelector('input[name=modo]:checked').value; }
+
+  // ---- transcripción en pantalla ----
+  function line(cls) { const d = document.createElement('div'); d.className = 't ' + cls; $('transcript').append(d); $('transcript').scrollTop = 1e9; return d; }
+  function onHeard(t) { curIn += t; if (!inEl) inEl = line('me'); inEl.textContent = curIn; $('liveIn').textContent = '—'; }
+  function onSaid(t) { curOut += t; if (!outEl) outEl = line('ai'); outEl.textContent = 'Claude: ' + curOut; }
+  function endTurn() { curIn = ''; curOut = ''; inEl = null; outEl = null; }
+
+  // ---- audio de salida (PCM16 24 kHz) ----
+  function playChunk(ab) {
+    if ($('mute').checked) return;
+    const n = ab.byteLength >> 1; if (!n) return;
+    const buf = actx.createBuffer(1, n, 24000); const ch = buf.getChannelData(0); const dv = new DataView(ab);
+    for (let i = 0; i < n; i++) ch[i] = dv.getInt16(i * 2, true) / 32768;
+    const src = actx.createBufferSource(); src.buffer = buf; src.connect(actx.destination);
+    const now = actx.currentTime; if (playAt < now + 0.05) playAt = now + 0.05;
+    src.start(playAt); playAt += buf.duration; scheduled.push(src);
+    src.onended = () => { const i = scheduled.indexOf(src); if (i >= 0) scheduled.splice(i, 1); };
+    status('talk', 'Hablando');
+  }
+  function stopPlayback() { for (const s of scheduled) { try { s.stop(); } catch (e) {} } scheduled.length = 0; playAt = 0; }
+
+  // ---- audio de entrada (micro -> PCM16 16 kHz) ----
+  function downsampleTo16k(f32, inRate) {
+    if (inRate === 16000) return f32;
+    const ratio = inRate / 16000; const outLen = Math.floor(f32.length / ratio); const out = new Float32Array(outLen);
+    for (let i = 0; i < outLen; i++) { const s = Math.floor(i * ratio), e = Math.min(f32.length, Math.floor((i + 1) * ratio)); let a = 0; for (let j = s; j < e; j++) a += f32[j]; out[i] = a / Math.max(1, e - s); }
+    return out;
+  }
+  function toPCM16(f32) { const b = new ArrayBuffer(f32.length * 2); const dv = new DataView(b); for (let i = 0; i < f32.length; i++) { const s = Math.max(-1, Math.min(1, f32[i])); dv.setInt16(i * 2, s < 0 ? s * 32768 : s * 32767, true); } return b; }
+
+  async function start() {
+    showErr('');
+    try { actx = new (window.AudioContext || window.webkitAudioContext)(); await actx.resume(); } catch (e) { showErr('Este navegador no permite audio.'); return; }
+    try { micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); }
+    catch (e) { showErr('Sin permiso de micrófono. En iPhone: Ajustes > Safari > Micrófono > Permitir.'); return; }
+
+    const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+    ws = new WebSocket(proto + location.host + '/ws?pin=' + encodeURIComponent(pin) + '&modo=' + modo() + '&voz=' + encodeURIComponent($('voz').value));
+    ws.binaryType = 'arraybuffer';
+    status('busy', 'Conectando');
+    ws.onopen = () => {
+      srcNode = actx.createMediaStreamSource(micStream);
+      proc = actx.createScriptProcessor(4096, 1, 1);
+      proc.onaudioprocess = ev => {
+        if (!running || ws.readyState !== 1) return;
+        const f = ev.inputBuffer.getChannelData(0);
+        let peak = 0; for (let i = 0; i < f.length; i += 16) peak = Math.max(peak, Math.abs(f[i]));
+        $('meter').style.width = Math.min(100, peak * 300) + '%';
+        ws.send(toPCM16(downsampleTo16k(f, actx.sampleRate)));
+      };
+      srcNode.connect(proc); proc.connect(actx.destination);
+      running = true;
+    };
+    ws.onmessage = ev => {
+      if (ev.data instanceof ArrayBuffer) { playChunk(ev.data); return; }
+      let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+      if (m.tipo === 'listo') { status('on', 'Escuchando'); $('info').textContent = 'Modelo ' + m.modelo + ' · voz ' + m.voz; }
+      else if (m.tipo === 'oido') onHeard(m.texto);
+      else if (m.tipo === 'dicho') onSaid(m.texto);
+      else if (m.tipo === 'interrumpido') { stopPlayback(); status('on', 'Escuchando'); }
+      else if (m.tipo === 'fin_turno') { endTurn(); setTimeout(() => { if (running && !scheduled.length) status('on', 'Escuchando'); }, 300); }
+      else if (m.tipo === 'aviso') showErr(m.texto);
+      else if (m.tipo === 'cerrado') { showErr(m.motivo || 'Sesión cerrada'); if (running) { stopAudio(); setTimeout(() => { if (running) start(); }, 800); } }
+    };
+    ws.onerror = () => showErr('No se pudo conectar. Comprueba el PIN.');
+    ws.onclose = () => { if (running) { stopAudio(); status('busy', 'Reconectando'); setTimeout(() => { if (running) start(); }, 1000); } };
+  }
+  function stopAudio() {
+    try { proc && proc.disconnect(); srcNode && srcNode.disconnect(); } catch (e) {}
+    try { micStream && micStream.getTracks().forEach(t => t.stop()); } catch (e) {}
+    proc = null; srcNode = null; micStream = null;
+  }
+  function stop() {
+    running = false; stopAudio(); stopPlayback();
+    try { ws && ws.close(); } catch (e) {} ws = null;
+    status('off', 'Parado'); $('meter').style.width = '0';
+  }
+
+  $('go').addEventListener('click', () => {
+    if (!pinOk()) return;
+    if (running) { stop(); $('go').textContent = 'Empezar'; $('go').classList.remove('on'); }
+    else { $('go').textContent = 'Parar'; $('go').classList.add('on'); start(); }
+  });
+
+  // ---- PIN ----
+  function pinOk() { if ($('pinBox').hidden || pin) return true; $('pinBox').hidden = false; $('pin').focus(); return false; }
+  $('pin').addEventListener('keydown', e => { if (e.key === 'Enter') $('pinOk').click(); });
+  $('pinOk').addEventListener('click', () => { pin = $('pin').value.trim(); try { localStorage.setItem('copiloto_pin', pin); } catch (e) {} $('pinBox').hidden = true; showErr(''); });
+  if (!pin) $('pinBox').hidden = false;
+  fetch('/salud').then(r => r.json()).then(j => { if (!j.clave) showErr('El servidor no tiene la clave de Gemini.'); else $('info').textContent = 'Modelo ' + j.modelo; }).catch(() => {});
+})();
+</script>
+</body>
+</html>
