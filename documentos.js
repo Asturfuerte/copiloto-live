@@ -122,7 +122,7 @@ function buildIndex(dir) {
     if (!text.trim()) continue;
     const name = f.replace(/\.(md|txt|pdf|docx)$/i, '');
     const parts = chunk(text);
-    index.docs.push({ name, file: f, chunks: parts.length, chars: text.length });
+    index.docs.push({ name, file: f, chunks: parts.length, chars: text.length, text: text.replace(/\r/g, '').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n') });
     parts.forEach((t, i) => {
       const toks = tokens(t); const tf = new Map();
       for (const w of toks) tf.set(w, (tf.get(w) || 0) + 1);
@@ -236,6 +236,20 @@ async function searchHybrid(index, query, key, k = 8, documento) {
   return top.map(x => x.c);
 }
 
+// Texto completo de un documento, por partes de ~PAGE caracteres (para listar/resumir/contar todo el contenido).
+const PAGE = Number(process.env.DOC_PAGE_CHARS || 14000);
+function readDocument(index, documento, parte) {
+  if (!index.docs.length) return 'No hay documentos cargados.';
+  const name = pickDoc(index, documento) || (index.docs.length === 1 ? index.docs[0].name : null);
+  if (!name) return 'No sé qué documento quieres. Documentos: ' + index.docs.map(d => d.name).join('; ') + '.';
+  const d = index.docs.find(x => x.name === name);
+  const total = Math.max(1, Math.ceil(d.text.length / PAGE));
+  let p = Math.min(total, Math.max(1, Number(parte) || 1));
+  let start = (p - 1) * PAGE; if (start > 0) { const nl = d.text.lastIndexOf('\n', start); if (nl > start - 400) start = nl + 1; }
+  let end = Math.min(d.text.length, p * PAGE); if (end < d.text.length) { const nl = d.text.indexOf('\n', end); if (nl > 0 && nl < end + 400) end = nl; }
+  return `[${d.name}, parte ${p} de ${total}]` + (total > 1 && p < total ? ` (pide la parte ${p + 1} para seguir)` : '') + '\n' + d.text.slice(start, end);
+}
+
 function format(index, hits) {
   if (!index.chunks.length) return 'No hay documentos cargados.';
   if (!hits.length) return 'No he encontrado nada sobre eso en los documentos (' + index.docs.map(d => d.name).join(', ') + ').';
@@ -244,4 +258,4 @@ function format(index, hits) {
 function answer(index, query, k = 8) { return format(index, search(index, query, k)); }
 async function answerAsync(index, query, key, k = 8, documento) { return format(index, await searchHybrid(index, query, key, k, documento)); }
 
-module.exports = { buildIndex, search, answer, answerAsync, ensureEmbeddings, tokens, chunk, ensureOcr, pdfNeedsOcr, OCR_SIDECAR };
+module.exports = { buildIndex, search, answer, answerAsync, readDocument, ensureEmbeddings, tokens, chunk, ensureOcr, pdfNeedsOcr, OCR_SIDECAR };

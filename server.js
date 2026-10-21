@@ -84,6 +84,17 @@ function docsTool() {
         },
         required: ['pregunta'],
       },
+    }, {
+      name: 'leer_documento',
+      description: 'Devuelve el texto COMPLETO de un documento, por partes. Úsala cuando la pregunta exija ver todo el documento y no un fragmento: listar todas las fechas, periodos, empresas, cláusulas o importes; contar; resumir; comparar partes alejadas. Si tiene varias partes, pide las siguientes hasta tener lo que necesitas. Documentos disponibles: ' + (DOCS.docs.map(d => d.name).join('; ') || 'ninguno') + '.',
+      parameters: {
+        type: 'OBJECT',
+        properties: {
+          documento: { type: 'STRING', description: 'Nombre (o parte) del documento a leer.' },
+          parte: { type: 'INTEGER', description: 'Número de parte (empieza en 1).' },
+        },
+        required: ['documento'],
+      },
     }],
   };
 }
@@ -91,7 +102,7 @@ function docsRules() {
   return DOCS.docs.length ? `
 
 === DOCUMENTOS ===
-Tienes la función consultar_documentos. Documentos cargados: ${DOCS.docs.map(d => d.name).join('; ')}.
+Tienes dos funciones: consultar_documentos (busca fragmentos; para preguntas concretas: un dato, una cláusula, una cifra) y leer_documento (devuelve el documento entero por partes; para listar todo, contar, resumir o cuando la búsqueda no da lo que pides). Documentos cargados: ${DOCS.docs.map(d => d.name).join('; ')}.
 Cuando te pregunten algo que pueda estar en esos documentos, llama a la función ANTES de responder y contesta solo con lo que devuelva, citando el documento. En "pregunta" pon solo lo que buscas dentro del texto (concepto, dato, cláusula), con términos concretos; el nombre del documento va aparte en "documento". Si no encuentras lo que buscas, prueba una segunda vez con otras palabras. Si la pregunta tiene varias partes, responde las que sí hayas encontrado y di cuál no. Nunca inventes cláusulas, cifras ni fechas.
 ` : '';
 }
@@ -275,6 +286,13 @@ function startSession(client, params) {
             const t0 = Date.now();
             const result = await documentos.answerAsync(DOCS, pregunta, GEMINI_KEY, 8, documento);
             console.log('consultar_documentos("' + pregunta + '") -> ' + result.length + ' chars en ' + (Date.now() - t0) + ' ms' + (DOCS.embedded ? '' : ' (sin embeddings)'));
+            return { id: c.id, name: c.name, response: { result } };
+          }
+          if (c.name === 'leer_documento') {
+            const documento = String((c.args && c.args.documento) || ''); const parte = Number(c.args && c.args.parte) || 1;
+            sendText(client, { tipo: 'aviso', texto: 'Consultando documentos: leyendo ' + documento + (parte > 1 ? ' (parte ' + parte + ')' : '') });
+            const result = documentos.readDocument(DOCS, documento, parte);
+            console.log('leer_documento("' + documento + '", ' + parte + ') -> ' + result.length + ' chars');
             return { id: c.id, name: c.name, response: { result } };
           }
           return { id: c.id, name: c.name, response: { result: 'no disponible' } };
