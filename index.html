@@ -38,6 +38,7 @@ h2 { font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; color:
 .transcript { max-height: 32vh; overflow-y: auto; font-size: .95rem; display: grid; gap: 6px; }
 .t { padding: 6px 10px; border-radius: 8px; background: var(--bg); }
 .t.ai { background: var(--resp-bg); border-left: 3px solid var(--resp); }
+.t.sys { opacity: .65; font-size: .9em; font-style: italic; }
 .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .small { font: inherit; font-size: .9rem; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }
 .hint { font-size: .85rem; color: var(--muted); margin: 0; }
@@ -152,12 +153,12 @@ input[type=password] { width: 100%; }
     ws.onmessage = ev => {
       if (ev.data instanceof ArrayBuffer) { playChunk(ev.data); return; }
       let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
-      if (m.tipo === 'listo') { status('on', 'Escuchando'); if (m.nombre) window.agentName = m.nombre; $('info').textContent = 'Modelo ' + m.modelo + ' · voz ' + m.voz + (m.nombre ? ' · responde a "' + m.nombre + '"' : '') + (m.conocimiento ? ' · con conocimiento' : ''); }
+      if (m.tipo === 'listo') { status('on', 'Escuchando'); if (m.nombre) window.agentName = m.nombre; $('info').textContent = 'Modelo ' + m.modelo + ' · voz ' + m.voz + (m.nombre ? ' · responde a "' + m.nombre + '"' : '') + (m.conocimiento ? ' · con conocimiento' : '') + (m.documentos ? ' · ' + m.documentos + ' documento' + (m.documentos > 1 ? 's' : '') : ''); }
       else if (m.tipo === 'oido') onHeard(m.texto);
       else if (m.tipo === 'dicho') onSaid(m.texto);
       else if (m.tipo === 'interrumpido') { stopPlayback(); status('on', 'Escuchando'); }
       else if (m.tipo === 'fin_turno') { endTurn(); setTimeout(() => { if (running && !scheduled.length) status('on', 'Escuchando'); }, 300); }
-      else if (m.tipo === 'aviso') showErr(m.texto);
+      else if (m.tipo === 'aviso') { if (/^Consultando documentos/.test(m.texto)) line('sys').textContent = '📄 ' + m.texto; else showErr(m.texto); }
       else if (m.tipo === 'cerrado') { showErr(m.motivo || 'Sesión cerrada'); if (running) { stopAudio(); setTimeout(() => { if (running) start(); }, 800); } }
     };
     ws.onerror = () => showErr('No se pudo conectar. Comprueba el PIN.');

@@ -1,7 +1,9 @@
 FROM node:22-alpine
+RUN apk add --no-cache poppler-utils unzip
 WORKDIR /app
-COPY package.json server.js index.html ./
+COPY package.json server.js documentos.js index.html ./
 COPY conocimiento ./conocimiento
+COPY documentos ./documentos
 ENV PORT=3000
 EXPOSE 3000
 CMD ["node", "server.js"]

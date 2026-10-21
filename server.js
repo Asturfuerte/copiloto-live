@@ -27,6 +27,29 @@ function loadKnowledge() {
   } catch (e) { return ''; }
 }
 const KNOWLEDGE = loadKnowledge();
+
+// Documentos: carpeta con md/txt/pdf/docx que se indexa al arrancar y se consulta con la función consultar_documentos.
+const DOCS_DIR = process.env.DOCS_DIR || path.join(__dirname, 'documentos');
+const documentos = require('./documentos');
+const DOCS = documentos.buildIndex(DOCS_DIR);
+const DOCS_TOOL = {
+  functionDeclarations: [{
+    name: 'consultar_documentos',
+    description: 'Busca en los documentos del cliente (contratos, expedientes, sentencias, informes, catálogos) y devuelve los fragmentos más relevantes. Úsala siempre que te pregunten por el contenido de un documento, un expediente, un contrato, una cláusula, una fecha o una cifra que pueda estar en ellos. Documentos disponibles: ' + (DOCS.docs.map(d => d.name).join('; ') || 'ninguno') + '.',
+    parameters: {
+      type: 'OBJECT',
+      properties: { pregunta: { type: 'STRING', description: 'Lo que quieres encontrar, con las palabras clave concretas (nombres, conceptos, fechas).' } },
+      required: ['pregunta'],
+    },
+  }],
+};
+const DOCS_RULES = DOCS.docs.length ? `
+
+=== DOCUMENTOS ===
+Tienes la función consultar_documentos. Documentos cargados: ${DOCS.docs.map(d => d.name).join('; ')}.
+Cuando te pregunten algo que pueda estar en esos documentos, llama a la función ANTES de responder y contesta solo con lo que devuelva, citando el documento. Si no devuelve nada útil, di que no lo has encontrado en los documentos. Nunca inventes cláusulas, cifras ni fechas.
+` : '';
+
 const KNOWLEDGE_RULES = `
 
 === CONOCIMIENTO PROPIO ===
@@ -155,19 +178,22 @@ function startSession(client, params) {
         responseModalities: ['AUDIO'],
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } }, languageCode: 'es-ES' },
       },
-      systemInstruction: { parts: [{ text: PERSONA[modo] + (KNOWLEDGE ? KNOWLEDGE_RULES + KNOWLEDGE : '') }] },
+      systemInstruction: { parts: [{ text: PERSONA[modo] + DOCS_RULES + (KNOWLEDGE ? KNOWLEDGE_RULES + KNOWLEDGE : '') }] },
       realtimeInputConfig: { automaticActivityDetection: { disabled: false, endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH', silenceDurationMs: 500 } },
       inputAudioTranscription: {},
       outputAudioTranscription: {},
     },
   };
-  if (ENABLE_SEARCH) setup.setup.tools = [{ googleSearch: {} }];
+  setup.setup.tools = [];
+  if (ENABLE_SEARCH) setup.setup.tools.push({ googleSearch: {} });
+  if (DOCS.docs.length) setup.setup.tools.push(DOCS_TOOL);
+  if (!setup.setup.tools.length) delete setup.setup.tools;
 
   gem = connectGemini(
     () => { gem.send(setup); },
     raw => {
       let msg; try { msg = JSON.parse(raw.toString()); } catch (e) { return; }
-      if (msg.setupComplete) { ready = true; sendText(client, { tipo: 'listo', modelo: LIVE_MODEL, voz: voice, nombre: AGENT_NAME, conocimiento: KNOWLEDGE.length }); for (const p of pending) gem.send(p); pending.length = 0; return; }
+      if (msg.setupComplete) { ready = true; sendText(client, { tipo: 'listo', modelo: LIVE_MODEL, voz: voice, nombre: AGENT_NAME, conocimiento: KNOWLEDGE.length, documentos: DOCS.docs.length }); for (const p of pending) gem.send(p); pending.length = 0; return; }
       const sc = msg.serverContent;
       if (sc) {
         if (sc.interrupted) sendText(client, { tipo: 'interrumpido' });
@@ -179,9 +205,19 @@ function startSession(client, params) {
       }
       if (msg.goAway) sendText(client, { tipo: 'aviso', texto: 'La sesión con Gemini va a cerrarse; reconectando.' });
       if (msg.toolCall) {
-        // Google Search se resuelve en el lado de Google; cualquier otra función la rechazamos limpiamente
+        // Google Search se resuelve en el lado de Google. consultar_documentos la resolvemos aquí; el resto se rechaza limpiamente.
         const calls = msg.toolCall.functionCalls || [];
-        gem.send({ toolResponse: { functionResponses: calls.map(c => ({ id: c.id, name: c.name, response: { result: 'no disponible' } })) } });
+        const responses = calls.map(c => {
+          if (c.name === 'consultar_documentos') {
+            const pregunta = String((c.args && c.args.pregunta) || '');
+            sendText(client, { tipo: 'aviso', texto: 'Consultando documentos: ' + pregunta });
+            const result = documentos.answer(DOCS, pregunta);
+            console.log('consultar_documentos("' + pregunta + '") -> ' + result.length + ' chars');
+            return { id: c.id, name: c.name, response: { result } };
+          }
+          return { id: c.id, name: c.name, response: { result: 'no disponible' } };
+        });
+        gem.send({ toolResponse: { functionResponses: responses } });
       }
     },
     reason => { if (!closed) { closed = true; sendText(client, { tipo: 'cerrado', motivo: reason }); try { client.end(); } catch (e) {} } }
@@ -205,7 +241,7 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store, no-cache, must-revalidate', 'pragma': 'no-cache' });
     return res.end(INDEX);
   }
-  if (req.method === 'GET' && req.url === '/salud') return send(res, 200, { ok: true, clave: !!GEMINI_KEY, modelo: LIVE_MODEL, voz: LIVE_VOICE, busqueda: ENABLE_SEARCH, nombre: AGENT_NAME, conocimiento_chars: KNOWLEDGE.length });
+  if (req.method === 'GET' && req.url === '/salud') return send(res, 200, { ok: true, clave: !!GEMINI_KEY, modelo: LIVE_MODEL, voz: LIVE_VOICE, busqueda: ENABLE_SEARCH, nombre: AGENT_NAME, conocimiento_chars: KNOWLEDGE.length, documentos: DOCS.docs.map(d => ({ nombre: d.name, fragmentos: d.chunks })) });
   send(res, 404, { error: 'No encontrado' });
 });
 
