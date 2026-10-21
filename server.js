@@ -249,7 +249,7 @@ function startSession(client, params) {
         responseModalities: ['AUDIO'],
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } }, languageCode: 'es-ES' },
       },
-      systemInstruction: { parts: [{ text: PERSONA[modo] + docsRules() + (KNOWLEDGE ? KNOWLEDGE_RULES + KNOWLEDGE : '') }] },
+      systemInstruction: { parts: [{ text: PERSONA[modo] + AGENDA_RULES + agenda.resumenParaSesion() + docsRules() + (KNOWLEDGE ? KNOWLEDGE_RULES + KNOWLEDGE : '') }] },
       realtimeInputConfig: { automaticActivityDetection: { disabled: false, endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH', silenceDurationMs: 500 } },
       inputAudioTranscription: {},
       outputAudioTranscription: {},
@@ -258,6 +258,7 @@ function startSession(client, params) {
   setup.setup.tools = [];
   if (ENABLE_SEARCH) setup.setup.tools.push({ googleSearch: {} });
   if (DOCS.docs.length) setup.setup.tools.push(docsTool());
+  setup.setup.tools.push(AGENDA_TOOL);
   if (!setup.setup.tools.length) delete setup.setup.tools;
 
   gem = connectGemini(
@@ -288,6 +289,17 @@ function startSession(client, params) {
             console.log('consultar_documentos("' + pregunta + '") -> ' + result.length + ' chars en ' + (Date.now() - t0) + ' ms' + (DOCS.embedded ? '' : ' (sin embeddings)'));
             return { id: c.id, name: c.name, response: { result } };
           }
+          if (c.name === 'guardar_recordatorio' || c.name === 'listar_recordatorios' || c.name === 'completar_recordatorio' || c.name === 'modificar_recordatorio') {
+            const a = c.args || {}; let result;
+            try {
+              if (c.name === 'guardar_recordatorio') { const it = agenda.add({ texto: a.texto, fecha: a.fecha, hora: a.hora, lugar: a.lugar, tipo: a.tipo }); result = 'Guardado: ' + agenda.describe(it, require('./recordatorios').ahora().ymd); sendText(client, { tipo: 'agenda', accion: 'nuevo', item: it }); }
+              else if (c.name === 'listar_recordatorios') result = agenda.listar(a.desde, a.hasta);
+              else if (c.name === 'completar_recordatorio') { const it = agenda.update(String(a.id || ''), { hecho: true }); result = 'Completado: ' + it.texto; sendText(client, { tipo: 'agenda', accion: 'hecho', item: it }); }
+              else { const it = agenda.update(String(a.id || ''), { texto: a.texto, fecha: a.fecha, hora: a.hora, lugar: a.lugar }); result = 'Modificado: ' + agenda.describe(it, require('./recordatorios').ahora().ymd); sendText(client, { tipo: 'agenda', accion: 'cambio', item: it }); }
+            } catch (e) { result = 'Error: ' + e.message; }
+            console.log(c.name + '(' + JSON.stringify(a) + ') -> ' + result.slice(0, 80));
+            return { id: c.id, name: c.name, response: { result } };
+          }
           if (c.name === 'leer_documento') {
             const documento = String((c.args && c.args.documento) || ''); const parte = Number(c.args && c.args.parte) || 1;
             sendText(client, { tipo: 'aviso', texto: 'Consultando documentos: leyendo ' + documento + (parte > 1 ? ' (parte ' + parte + ')' : '') });
@@ -316,6 +328,32 @@ function startSession(client, params) {
 function send(res, code, obj) { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(obj)); }
 
 // ---- Acceso: PIN o token de sesión (emitido tras desbloquear con passkey / Face ID) ----
+const { Recordatorios } = require('./recordatorios');
+const AGENDA_FILE = process.env.AGENDA_FILE || (path.resolve(DOCS_DIR) !== path.resolve(BUNDLED_DOCS) ? path.join(path.dirname(DOCS_DIR), 'agenda.json') : path.join(__dirname, 'agenda.json'));
+const agenda = new Recordatorios(AGENDA_FILE);
+const AGENDA_TOOL = {
+  functionDeclarations: [
+    { name: 'guardar_recordatorio', description: 'Guarda en la agenda una cita, una tarea con fecha o una nota que el usuario quiera recordar. Úsala en cuanto el usuario mencione algo que quiere apuntar o recordar ("tengo cita el jueves", "apúntame que…", "recuérdame…"). Calcula la fecha exacta a partir de la fecha de hoy que tienes en las instrucciones; si la fecha es ambigua, pregunta antes.',
+      parameters: { type: 'OBJECT', properties: {
+        texto: { type: 'STRING', description: 'Qué es (p. ej. "Cita con el dentista", "Llamar a Flavio").' },
+        fecha: { type: 'STRING', description: 'Fecha en formato AAAA-MM-DD. Vacío si es una nota sin fecha.' },
+        hora: { type: 'STRING', description: 'Hora HH:MM (24 h) si la hay.' },
+        lugar: { type: 'STRING', description: 'Lugar, si lo dice.' },
+        tipo: { type: 'STRING', description: '"cita", "tarea" o "nota".' },
+      }, required: ['texto'] } },
+    { name: 'listar_recordatorios', description: 'Devuelve lo pendiente en la agenda (citas, tareas, notas), opcionalmente entre dos fechas. Úsala cuando pregunten qué hay, qué toca esta semana, si hay algo pendiente, etc.',
+      parameters: { type: 'OBJECT', properties: { desde: { type: 'STRING', description: 'AAAA-MM-DD (opcional).' }, hasta: { type: 'STRING', description: 'AAAA-MM-DD (opcional).' } } } },
+    { name: 'completar_recordatorio', description: 'Marca como hecha o cancelada una cita/tarea/nota (desaparece de los pendientes). Necesita el id que aparece entre corchetes al listar.',
+      parameters: { type: 'OBJECT', properties: { id: { type: 'STRING' } }, required: ['id'] } },
+    { name: 'modificar_recordatorio', description: 'Cambia la fecha, la hora, el lugar o el texto de un recordatorio existente (p. ej. "la cita del dentista pásala al viernes").',
+      parameters: { type: 'OBJECT', properties: { id: { type: 'STRING' }, texto: { type: 'STRING' }, fecha: { type: 'STRING', description: 'AAAA-MM-DD' }, hora: { type: 'STRING', description: 'HH:MM' }, lugar: { type: 'STRING' } }, required: ['id'] } },
+  ],
+};
+const AGENDA_RULES = `
+
+=== AGENDA ===
+Tienes una agenda persistente con las funciones guardar_recordatorio, listar_recordatorios, completar_recordatorio y modificar_recordatorio. Si el usuario menciona una cita, un plazo, algo que tiene que hacer o algo que quiere recordar, guárdalo (confirma en una frase: "Apuntado: dentista, jueves 23 a las 10"). Para fechas relativas usa la fecha de hoy. Si te pregunta qué tiene pendiente o qué hay esta semana, lista. Cuando diga que algo ya está hecho o se cancela, complétalo. Al empezar la sesión, si hay citas vencidas, de hoy o de los próximos días, recuérdaselas una vez, brevemente.`;
+
 const { Passkeys } = require('./passkeys');
 const PASSKEYS_FILE = process.env.PASSKEYS_FILE || (path.resolve(DOCS_DIR) !== path.resolve(BUNDLED_DOCS) ? path.join(path.dirname(DOCS_DIR), 'passkeys.json') : path.join(__dirname, 'passkeys.json'));
 const passkeys = new Passkeys(PASSKEYS_FILE);
@@ -351,7 +389,7 @@ const server = http.createServer((req, res) => {
     const f = path.join(PUBLIC_DIR, req.url.slice(1));
     if (fs.existsSync(f)) { res.writeHead(200, { 'content-type': MIME[path.extname(f)] || 'application/octet-stream', 'cache-control': 'public, max-age=86400' }); return res.end(fs.readFileSync(f)); }
   }
-  if (req.method === 'GET' && req.url === '/salud') return send(res, 200, { ok: true, clave: !!GEMINI_KEY, modelo: LIVE_MODEL, voz: LIVE_VOICE, busqueda: ENABLE_SEARCH, nombre: AGENT_NAME, conocimiento_chars: KNOWLEDGE.length, busqueda_semantica: !!DOCS.embedded, documentos: DOCS.docs.map(d => ({ nombre: d.name, fragmentos: d.chunks })) });
+  if (req.method === 'GET' && req.url === '/salud') return send(res, 200, { ok: true, clave: !!GEMINI_KEY, modelo: LIVE_MODEL, voz: LIVE_VOICE, busqueda: ENABLE_SEARCH, nombre: AGENT_NAME, conocimiento_chars: KNOWLEDGE.length, busqueda_semantica: !!DOCS.embedded, agenda_pendientes: agenda.pendientes().length, documentos: DOCS.docs.map(d => ({ nombre: d.name, fragmentos: d.chunks })) });
 
   const u = new URL(req.url, 'http://x');
 
@@ -371,6 +409,18 @@ const server = http.createServer((req, res) => {
     if (req.method === 'GET' && u.pathname === '/auth/dispositivos') { if (!authorized(u, req)) return send(res, 401, { error: 'PIN incorrecto' }); return send(res, 200, { dispositivos: passkeys.list() }); }
     if (req.method === 'DELETE' && u.pathname.startsWith('/auth/dispositivos/')) { if (!authorized(u, req)) return send(res, 401, { error: 'PIN incorrecto' }); passkeys.remove(decodeURIComponent(u.pathname.slice('/auth/dispositivos/'.length))); return send(res, 200, { ok: true, dispositivos: passkeys.list() }); }
     return send(res, 404, { error: 'No encontrado' });
+  }
+
+  // ---- Agenda (panel de la web) ----
+  if (u.pathname === '/agenda' || u.pathname.startsWith('/agenda/')) {
+    if (!authorized(u, req)) return send(res, 401, { error: 'PIN incorrecto' });
+    const hoy = require('./recordatorios').ahora();
+    if (req.method === 'GET' && u.pathname === '/agenda') return send(res, 200, { hoy: hoy.ymd, ahora: hoy.texto, items: agenda.pendientes().map(it => Object.assign({ descripcion: agenda.describe(it, hoy.ymd) }, it)) });
+    if (req.method === 'POST' && u.pathname === '/agenda') return readJson(req, (e, body) => { if (e) return send(res, 400, { error: 'JSON' }); try { send(res, 200, { ok: true, item: agenda.add(body) }); } catch (err) { send(res, 400, { error: err.message }); } });
+    const id = u.pathname.slice('/agenda/'.length);
+    if (req.method === 'DELETE' && id) { try { agenda.remove(id); return send(res, 200, { ok: true }); } catch (e) { return send(res, 404, { error: e.message }); } }
+    if (req.method === 'PATCH' && id) return readJson(req, (e, body) => { if (e) return send(res, 400, { error: 'JSON' }); try { send(res, 200, { ok: true, item: agenda.update(id, body) }); } catch (err) { send(res, 400, { error: err.message }); } });
+    return send(res, 405, { error: 'Método no permitido' });
   }
 
   // ---- Gestión de documentos (misma protección que la sesión: PIN o token) ----

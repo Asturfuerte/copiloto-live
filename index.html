@@ -116,6 +116,18 @@ input[type=password] { width: 100%; }
     <div class="live" id="liveIn">—</div>
   </section>
 
+  <section class="panel" id="agendaBox">
+    <h2>Agenda</h2>
+    <p class="hint">Dile a __AGENT_NAME__ "apúntame…" o "tengo cita el…" y lo guarda aquí. Te lo recuerda al empezar cada sesión.</p>
+    <ul class="docs" id="agendaList"></ul>
+    <div class="row">
+      <input type="text" id="agTexto" placeholder="Añadir a mano: qué" style="flex:2;min-width:140px;font:inherit;font-size:16px;padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink)">
+      <input type="date" id="agFecha" style="font:inherit;font-size:16px;padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink)">
+      <input type="time" id="agHora" style="font:inherit;font-size:16px;padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink)">
+      <button class="small" id="agAdd">Añadir</button>
+    </div>
+  </section>
+
   <section class="panel" id="docsBox">
     <h2>Documentos</h2>
     <p class="hint">Contratos, expedientes, sentencias, informes… (PDF, Word, texto; máx. 50 MB; los escaneos se leen con OCR). El copiloto los consulta cuando le preguntas por ellos.</p>
@@ -207,6 +219,7 @@ input[type=password] { width: 100%; }
       else if (m.tipo === 'dicho') onSaid(m.texto);
       else if (m.tipo === 'interrumpido') { stopPlayback(); status('on', 'Escuchando'); }
       else if (m.tipo === 'fin_turno') { endTurn(); setTimeout(() => { if (running && !scheduled.length) status('on', 'Escuchando'); }, 300); }
+      else if (m.tipo === 'agenda') { loadAgenda(); line('sys').textContent = (m.accion === 'nuevo' ? '📅 Apuntado: ' : m.accion === 'hecho' ? '✅ Hecho: ' : '✏️ Cambiado: ') + m.item.texto + (m.item.fecha ? ' (' + m.item.fecha + (m.item.hora ? ' ' + m.item.hora : '') + ')' : ''); }
       else if (m.tipo === 'aviso') { if (/^Consultando documentos/.test(m.texto)) line('sys').textContent = '📄 ' + m.texto; else showErr(m.texto); }
       else if (m.tipo === 'cerrado') { showErr(m.motivo || 'Sesión cerrada'); if (running) { stopAudio(); setTimeout(() => { if (running) start(); }, 800); } }
     };
@@ -235,7 +248,7 @@ input[type=password] { width: 100%; }
   function pinOk() { if (unlocked()) return true; showLock(); return false; }
   function showLock() { $('pinBox').hidden = false; $('bioSetup').hidden = true; $('bioBtn').hidden = !(hasWebAuthn && bioRegistered()); if ($('bioBtn').hidden) $('pin').focus(); }
   function authError(t) { $('authErr').textContent = t; $('authErr').hidden = !t; }
-  function onUnlocked() { $('pinBox').hidden = true; authError(''); showErr(''); loadDocs(); if (pin && hasWebAuthn && !bioRegistered() && !sessionStorage.getItem('bio_no')) $('bioSetup').hidden = false; }
+  function onUnlocked() { $('pinBox').hidden = true; authError(''); showErr(''); loadDocs(); loadAgenda(); if (pin && hasWebAuthn && !bioRegistered() && !sessionStorage.getItem('bio_no')) $('bioSetup').hidden = false; }
   $('pin').addEventListener('keydown', e => { if (e.key === 'Enter') $('pinOk').click(); });
   $('pinOk').addEventListener('click', async () => {
     const p = $('pin').value.trim(); if (!p) return;
@@ -300,6 +313,37 @@ input[type=password] { width: 100%; }
     if (!$('bioBtn').hidden) bioUnlock();
   })();
   fetch('/salud').then(r => r.json()).then(j => { if (!j.clave) showErr('El servidor no tiene la clave de Gemini.'); else $('info').textContent = 'Modelo ' + j.modelo; }).catch(() => {});
+
+  // ---- Agenda ----
+  function renderAgenda(items) {
+    const ul = $('agendaList'); ul.innerHTML = '';
+    if (!items.length) { const li = document.createElement('li'); li.className = 'empty'; li.textContent = 'Nada pendiente.'; ul.append(li); return; }
+    for (const it of items) {
+      const li = document.createElement('li');
+      const sp = document.createElement('span'); sp.style.whiteSpace = 'normal';
+      const icon = it.tipo === 'cita' ? '📅' : it.tipo === 'tarea' ? '☑️' : '📝';
+      sp.textContent = icon + ' ' + it.descripcion.replace(/^\[\w+\] \w+: /, '');
+      if (/VENCIDA/.test(it.descripcion)) sp.style.color = 'var(--err)'; else if (/\(HOY\)|\(mañana\)/.test(it.descripcion)) sp.style.fontWeight = '600';
+      const ok = document.createElement('button'); ok.className = 'del'; ok.style.color = 'var(--ok)'; ok.textContent = 'Hecho'; ok.title = 'Marcar como hecho';
+      ok.addEventListener('click', async () => { await fetch('/agenda/' + it.id + '?' + authQS(), { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ hecho: true }) }); loadAgenda(); });
+      const del = document.createElement('button'); del.className = 'del'; del.textContent = 'Borrar';
+      del.addEventListener('click', async () => { if (!confirm('¿Borrar "' + it.texto + '"?')) return; await fetch('/agenda/' + it.id + '?' + authQS(), { method: 'DELETE' }); loadAgenda(); });
+      li.append(sp, ok, del); ul.append(li);
+    }
+  }
+  async function loadAgenda() {
+    if (!unlocked()) return;
+    try { const r = await fetch('/agenda?' + authQS()); if (!r.ok) return; const j = await r.json(); renderAgenda(j.items || []); } catch (e) {}
+  }
+  $('agAdd').addEventListener('click', async () => {
+    const texto = $('agTexto').value.trim(); if (!texto || !pinOk()) return;
+    const body = { texto, fecha: $('agFecha').value || undefined, hora: $('agHora').value || undefined };
+    const r = await fetch('/agenda?' + authQS(), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { showErr(j.error || 'No se pudo guardar'); return; }
+    $('agTexto').value = ''; $('agFecha').value = ''; $('agHora').value = ''; loadAgenda();
+  });
+  $('agTexto').addEventListener('keydown', e => { if (e.key === 'Enter') $('agAdd').click(); });
 
   // ---- Documentos ----
   const fmtBytes = b => b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB';
