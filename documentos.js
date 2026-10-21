@@ -46,11 +46,11 @@ async function ocrPdf(file, onProgress) {
   const os = require('os');
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-'));
   try {
-    await run('pdftoppm', ['-r', '200', '-gray', '-png', file, path.join(tmp, 'p')]);
+    await run('pdftoppm', ['-r', String(process.env.OCR_DPI || 150), '-gray', '-png', file, path.join(tmp, 'p')]);
     const pngs = fs.readdirSync(tmp).filter(f => f.endsWith('.png')).sort();
     let text = '';
     for (let i = 0; i < pngs.length; i++) {
-      const t = await run('tesseract', [path.join(tmp, pngs[i]), '-', '-l', OCR_LANG, '--psm', '6']);
+      const t = await run('tesseract', [path.join(tmp, pngs[i]), '-', '-l', OCR_LANG, '--psm', '6'], { env: Object.assign({}, process.env, { OMP_THREAD_LIMIT: '1' }) });
       text += '\n\n===== Página ' + (i + 1) + ' =====\n' + t;
       fs.unlinkSync(path.join(tmp, pngs[i]));
       if (onProgress) onProgress(i + 1, pngs.length);
@@ -59,6 +59,7 @@ async function ocrPdf(file, onProgress) {
   } finally { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (e) {} }
 }
 // Si el PDF no tiene texto y aún no tiene OCR, lo genera y guarda el sidecar. Devuelve true si hizo OCR.
+function pdfNeedsOcr(file) { return !fs.existsSync(file + OCR_SIDECAR) && needsOcr(file, pdfTextLayer(file)); }
 async function ensureOcr(file, onProgress) {
   if (!/\.pdf$/i.test(file)) return false;
   const side = file + OCR_SIDECAR;
@@ -158,4 +159,4 @@ function answer(index, query, k = 5) {
   return hits.map(h => `[${h.doc}, fragmento ${h.n}]\n${h.text}`).join('\n\n---\n\n');
 }
 
-module.exports = { buildIndex, search, answer, tokens, chunk, ensureOcr, OCR_SIDECAR };
+module.exports = { buildIndex, search, answer, tokens, chunk, ensureOcr, pdfNeedsOcr, OCR_SIDECAR };

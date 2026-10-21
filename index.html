@@ -208,13 +208,20 @@ input[type=password] { width: 100%; }
 
   // ---- Documentos ----
   const fmtBytes = b => b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB';
+  let docsPoll = null;
   function renderDocs(list) {
     const ul = $('docsList'); ul.innerHTML = '';
+    const pendiente = list.some(d => d.procesando);
+    if (pendiente && !docsPoll) docsPoll = setInterval(loadDocs, 5000);
+    if (!pendiente && docsPoll) { clearInterval(docsPoll); docsPoll = null; }
     if (!list.length) { const li = document.createElement('li'); li.className = 'empty'; li.textContent = 'Todavía no hay documentos.'; ul.append(li); return; }
     for (const d of list) {
       const li = document.createElement('li');
       const sp = document.createElement('span'); sp.textContent = d.fichero; sp.title = d.fichero;
-      const sm = document.createElement('small'); sm.textContent = fmtBytes(d.bytes) + ' · ' + d.fragmentos + ' frag.' + (d.ocr ? ' · OCR' : '');
+      const sm = document.createElement('small');
+      if (d.procesando) { sm.textContent = fmtBytes(d.bytes) + ' · ⏳ OCR ' + (d.progreso || '') + ' (se puede cerrar la página)'; li.style.opacity = '.7'; }
+      else if (d.error) { sm.textContent = '⚠️ OCR falló: ' + d.error; sm.style.color = 'var(--err)'; }
+      else sm.textContent = fmtBytes(d.bytes) + ' · ' + d.fragmentos + ' frag.' + (d.ocr ? ' · OCR' : '');
       const del = document.createElement('button'); del.className = 'del'; del.textContent = 'Borrar'; del.title = 'Borrar ' + d.fichero;
       del.addEventListener('click', async () => {
         if (!confirm('¿Borrar "' + d.fichero + '"?')) return;
@@ -236,7 +243,7 @@ input[type=password] { width: 100%; }
     $('upLabel').classList.add('busy'); showErr('');
     let n = 0;
     for (const f of files) {
-      $('upStatus').textContent = 'Subiendo ' + f.name + ' (' + (n + 1) + '/' + files.length + ')… Si es un escaneo, el OCR puede tardar un minuto.';
+      $('upStatus').textContent = 'Subiendo ' + f.name + ' (' + (n + 1) + '/' + files.length + ')…';
       try {
         const r = await fetch('/documentos/' + encodeURIComponent(f.name) + '?pin=' + encodeURIComponent(pin), { method: 'PUT', body: f, headers: { 'content-type': 'application/octet-stream' } });
         const j = await r.json().catch(() => ({}));
@@ -244,7 +251,8 @@ input[type=password] { width: 100%; }
         n++; renderDocs(j.documentos || []);
       } catch (e) { showErr(f.name + ': no se pudo subir'); }
     }
-    $('upStatus').textContent = n ? n + ' documento' + (n > 1 ? 's' : '') + ' listo' + (n > 1 ? 's' : '') + ' para consultar.' : '';
+    const enOcr = [...$('docsList').querySelectorAll('li')].some(li => /OCR \d|preparando/.test(li.textContent));
+    $('upStatus').textContent = n ? (enOcr ? 'Subido. Los escaneos se están leyendo con OCR (unos 10 s por página); mientras, puedes cerrar la página.' : n + ' documento' + (n > 1 ? 's' : '') + ' listo' + (n > 1 ? 's' : '') + ' para consultar.') : '';
     $('upLabel').classList.remove('busy'); $('upFile').value = '';
   });
   $('pinOk').addEventListener('click', loadDocs);

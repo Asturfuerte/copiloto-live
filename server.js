@@ -44,13 +44,28 @@ try {
 const documentos = require('./documentos');
 let DOCS = documentos.buildIndex(DOCS_DIR);
 function reindexDocs() { DOCS = documentos.buildIndex(DOCS_DIR); return DOCS; }
-// Al arrancar, OCR en segundo plano de los PDF escaneados que aún no lo tengan (p. ej. copiados a mano a la carpeta).
-(async () => {
-  let files = []; try { files = fs.readdirSync(DOCS_DIR).filter(f => /\.pdf$/i.test(f)); } catch (e) { return; }
-  for (const f of files) {
-    try { if (await documentos.ensureOcr(path.join(DOCS_DIR, f))) reindexDocs(); } catch (e) { console.log('OCR falló para ' + f + ': ' + e.message); }
-  }
-})();
+// Cola de OCR en segundo plano (uno a la vez). OCR_PENDING: fichero -> { pagina, total, error }.
+const OCR_PENDING = new Map();
+let ocrChain = Promise.resolve();
+function queueOcr(file) {
+  if (OCR_PENDING.has(file)) return;
+  OCR_PENDING.set(file, { pagina: 0, total: 0, error: null });
+  ocrChain = ocrChain.then(async () => {
+    const full = path.join(DOCS_DIR, file);
+    try {
+      if (!fs.existsSync(full)) return;
+      await documentos.ensureOcr(full, (i, n) => { const p = OCR_PENDING.get(file); if (p) { p.pagina = i; p.total = n; } if (i === 1 || i % 10 === 0 || i === n) console.log('OCR ' + file + ': página ' + i + '/' + n); });
+      OCR_PENDING.delete(file);
+      reindexDocs();
+    } catch (e) {
+      console.log('OCR falló para ' + file + ': ' + e.message);
+      const p = OCR_PENDING.get(file); if (p) p.error = e.message.slice(0, 120);
+      setTimeout(() => OCR_PENDING.delete(file), 10 * 60 * 1000); // el error se muestra un rato y luego desaparece
+    }
+  });
+}
+// Al arrancar, OCR de los PDF escaneados que aún no lo tengan (p. ej. copiados a mano a la carpeta).
+try { for (const f of fs.readdirSync(DOCS_DIR)) if (/\.pdf$/i.test(f) && documentos.pdfNeedsOcr(path.join(DOCS_DIR, f))) queueOcr(f); } catch (e) {}
 function docsTool() {
   return {
     functionDeclarations: [{
@@ -79,7 +94,12 @@ function safeDocName(raw) {
   return n;
 }
 function docsList() {
-  return DOCS.docs.map(d => { let st = {}; try { st = fs.statSync(path.join(DOCS_DIR, d.file)); } catch (e) {} return { nombre: d.name, fichero: d.file, fragmentos: d.chunks, bytes: st.size || 0, fecha: st.mtime || null, ocr: fs.existsSync(path.join(DOCS_DIR, d.file + documentos.OCR_SIDECAR)) }; });
+  const list = DOCS.docs.map(d => { let st = {}; try { st = fs.statSync(path.join(DOCS_DIR, d.file)); } catch (e) {} return { nombre: d.name, fichero: d.file, fragmentos: d.chunks, bytes: st.size || 0, fecha: st.mtime || null, ocr: fs.existsSync(path.join(DOCS_DIR, d.file + documentos.OCR_SIDECAR)) }; });
+  for (const [file, p] of OCR_PENDING) {
+    let st = {}; try { st = fs.statSync(path.join(DOCS_DIR, file)); } catch (e) {}
+    list.push({ nombre: file.replace(DOCS_EXT, ''), fichero: file, fragmentos: 0, bytes: st.size || 0, fecha: st.mtime || null, ocr: true, procesando: !p.error, progreso: p.total ? p.pagina + '/' + p.total : 'preparando', error: p.error });
+  }
+  return list;
 }
 
 const KNOWLEDGE_RULES = `
@@ -293,15 +313,18 @@ const server = http.createServer((req, res) => {
         const full = path.join(DOCS_DIR, name);
         try {
           fs.writeFileSync(full, Buffer.concat(parts));
-          // PDF escaneado: OCR asíncrono antes de indexar (puede tardar ~1 s por página; la petición espera).
-          let ocr = false;
-          try { ocr = await documentos.ensureOcr(full, (i, n) => { if (i === 1 || i % 10 === 0) console.log('OCR ' + name + ': página ' + i + '/' + n); }); }
-          catch (e) { console.log('OCR falló para ' + name + ': ' + e.message); }
+          try { fs.unlinkSync(full + documentos.OCR_SIDECAR); } catch (e) {} // si se sustituye un PDF, su OCR anterior ya no vale
+          // PDF escaneado: se responde ya y el OCR sigue en segundo plano (la lista muestra el progreso).
+          if (/\.pdf$/i.test(name) && documentos.pdfNeedsOcr(full)) {
+            queueOcr(name);
+            console.log('Documento subido: ' + name + ' (escaneado; OCR en cola)');
+            return send(res, 202, { ok: true, procesando: true, documento: { nombre: name.replace(DOCS_EXT, ''), fichero: name, fragmentos: 0, ocr: true }, documentos: docsList() });
+          }
           reindexDocs();
           const d = DOCS.docs.find(x => x.file === name);
-          if (!d) { try { fs.unlinkSync(full); fs.unlinkSync(full + documentos.OCR_SIDECAR); } catch (e) {} reindexDocs(); return send(res, 422, { error: 'No se pudo extraer texto del fichero (ni con OCR).' }); }
-          console.log('Documento subido: ' + name + ' (' + d.chunks + ' fragmentos' + (ocr ? ', con OCR' : '') + ')');
-          send(res, 200, { ok: true, documento: { nombre: d.name, fichero: d.file, fragmentos: d.chunks, ocr }, documentos: docsList() });
+          if (!d) { try { fs.unlinkSync(full); } catch (e) {} reindexDocs(); return send(res, 422, { error: 'No se pudo extraer texto del fichero.' }); }
+          console.log('Documento subido: ' + name + ' (' + d.chunks + ' fragmentos)');
+          send(res, 200, { ok: true, documento: { nombre: d.name, fichero: d.file, fragmentos: d.chunks, ocr: false }, documentos: docsList() });
         } catch (e) { send(res, 500, { error: 'No se pudo guardar: ' + e.message }); }
       });
       req.on('error', () => {});
@@ -311,6 +334,7 @@ const server = http.createServer((req, res) => {
       if (!name) return send(res, 400, { error: 'Nombre no válido' });
       try { fs.unlinkSync(path.join(DOCS_DIR, name)); } catch (e) { return send(res, 404, { error: 'No existe' }); }
       try { fs.unlinkSync(path.join(DOCS_DIR, name + documentos.OCR_SIDECAR)); } catch (e) {}
+      OCR_PENDING.delete(name);
       reindexDocs(); console.log('Documento borrado: ' + name);
       return send(res, 200, { ok: true, documentos: docsList() });
     }

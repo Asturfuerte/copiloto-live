@@ -4,6 +4,6 @@ WORKDIR /app
 COPY package.json server.js documentos.js index.html ./
 COPY conocimiento ./conocimiento
 COPY documentos ./documentos
-ENV PORT=3000
+ENV PORT=3000 OMP_THREAD_LIMIT=1
 EXPOSE 3000
 CMD ["node", "server.js"]
