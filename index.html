@@ -60,6 +60,14 @@ input[type=password] { width: 100%; }
 .err { color: var(--err); font-size: .9rem; margin: 0; }
 .meter { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
 .meter > div { height: 100%; width: 0; background: var(--ok); transition: width .08s; }
+.lock { min-height: calc(100vh - 48px); min-height: calc(100dvh - 48px); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; text-align: center; padding: 24px 0; }
+.lockLogo { border-radius: 22px; box-shadow: 0 8px 24px rgba(0,0,0,.18); }
+.lockTitle { font-family: "IBM Plex Serif", Georgia, serif; color: var(--accent); margin: 0 0 8px; font-size: 2rem; }
+.lockStep { display: grid; gap: 12px; width: min(360px, 100%); }
+.lockStep[hidden], .lock[hidden] { display: none; }
+.pinInput { font: inherit; font-size: 1.6rem; letter-spacing: .4em; text-align: center; padding: 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); width: 100%; }
+.link { background: none; border: 0; color: var(--muted); font: inherit; font-size: .95rem; text-decoration: underline; cursor: pointer; padding: 8px; }
+.center { text-align: center; }
 .docs { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .docs li { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; background: var(--bg); font-size: .95rem; }
 .docs li span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -73,6 +81,7 @@ input[type=password] { width: 100%; }
 </head>
 <body>
 <div class="wrap">
+  <div id="appHead" hidden>
   <div class="head">
     <img src="/icon-192.png" alt="" width="44" height="44" class="logo">
     <div>
@@ -80,20 +89,33 @@ input[type=password] { width: 100%; }
     <p class="sub">Copiloto Live · escucha y habla en tiempo real, como una persona más. Puedes interrumpirle.</p>
     </div>
   </div>
+  </div>
 
-  <section class="panel" id="pinBox" hidden>
-    <h2>Acceso</h2>
-    <button class="big" id="bioBtn" hidden>🔓 Desbloquear con Face ID / huella</button>
-    <input type="password" id="pin" placeholder="PIN de acceso" autocomplete="current-password" inputmode="numeric">
-    <button class="small" id="pinOk">Entrar con PIN</button>
-    <p class="err" id="authErr" hidden></p>
-  </section>
-  <section class="panel" id="bioSetup" hidden>
-    <h2>Face ID / huella</h2>
-    <p class="hint" id="bioSetupText">Activa el desbloqueo con la cara o la huella en este dispositivo y no tendrás que escribir el PIN.</p>
-    <div class="row"><button class="small" id="bioSetupBtn">Activar en este dispositivo</button><button class="small" id="bioSetupNo">Ahora no</button></div>
-  </section>
+  <div class="lock" id="lock" hidden>
+    <img src="/icon-192.png" alt="" width="88" height="88" class="lockLogo">
+    <h1 class="lockTitle">__AGENT_NAME__</h1>
+    <!-- Paso A: Face ID ya activado en este dispositivo -->
+    <div class="lockStep" id="lockBio" hidden>
+      <button class="big" id="bioBtn">Entrar con Face ID</button>
+      <p class="hint center" id="bioHint">Tu asistente personal</p>
+      <button class="link" id="bioToPin">Usar el PIN</button>
+    </div>
+    <!-- Paso B: PIN -->
+    <div class="lockStep" id="lockPin" hidden>
+      <input type="password" id="pin" placeholder="PIN" autocomplete="current-password" inputmode="numeric" class="pinInput">
+      <button class="big" id="pinOk">Entrar</button>
+      <button class="link" id="pinToBio" hidden>Entrar con Face ID</button>
+    </div>
+    <!-- Paso C: ofrecer Face ID tras entrar con PIN -->
+    <div class="lockStep" id="lockOffer" hidden>
+      <p class="hint center" id="bioSetupText">¿Quieres entrar con Face ID la próxima vez, sin escribir el PIN?</p>
+      <button class="big" id="bioSetupBtn">Sí, activar Face ID</button>
+      <button class="link" id="bioSetupNo">Ahora no</button>
+    </div>
+    <p class="err center" id="authErr" hidden></p>
+  </div>
 
+  <div id="app" hidden>
   <section class="panel">
     <button class="big" id="go">Empezar</button>
     <div class="status" id="status" data-s="off"><span class="dot"></span><span id="statusText">Parado</span></div>
@@ -137,6 +159,7 @@ input[type=password] { width: 100%; }
       <span class="hint" id="upStatus"></span>
     </div>
   </section>
+  </div>
 </div>
 
 <script>
@@ -243,24 +266,40 @@ input[type=password] { width: 100%; }
     else { $('go').textContent = 'Parar'; $('go').classList.add('on'); start(); }
   });
 
-  // ---- PIN / Face ID ----
+  // ---- Pantalla de entrada (PIN / Face ID) ----
   function unlocked() { return !!(token || pin); }
   function pinOk() { if (unlocked()) return true; showLock(); return false; }
-  function showLock() { $('pinBox').hidden = false; $('bioSetup').hidden = true; $('bioBtn').hidden = !(hasWebAuthn && bioRegistered()); if ($('bioBtn').hidden) $('pin').focus(); }
   function authError(t) { $('authErr').textContent = t; $('authErr').hidden = !t; }
-  function onUnlocked() { $('pinBox').hidden = true; authError(''); showErr(''); loadDocs(); loadAgenda(); if (pin && hasWebAuthn && !bioRegistered() && !sessionStorage.getItem('bio_no')) $('bioSetup').hidden = false; }
+  function lockStep(which) { for (const id of ['lockBio', 'lockPin', 'lockOffer']) $(id).hidden = id !== which; }
+  function showLock() {
+    $('app').hidden = true; $('appHead').hidden = true; $('lock').hidden = false; authError('');
+    const bio = hasWebAuthn && bioRegistered();
+    lockStep(bio ? 'lockBio' : 'lockPin'); $('pinToBio').hidden = !bio;
+    if (!bio) setTimeout(() => $('pin').focus(), 50);
+  }
+  function showApp() { $('lock').hidden = true; $('app').hidden = false; $('appHead').hidden = false; }
+  function onUnlocked() {
+    authError(''); showErr(''); loadDocs(); loadAgenda();
+    if (pin && hasWebAuthn && !bioRegistered() && !sessionStorage.getItem('bio_no')) { lockStep('lockOffer'); $('lock').hidden = false; return; }
+    showApp();
+  }
   $('pin').addEventListener('keydown', e => { if (e.key === 'Enter') $('pinOk').click(); });
   $('pinOk').addEventListener('click', async () => {
-    const p = $('pin').value.trim(); if (!p) return;
+    const p = $('pin').value.trim(); if (!p) { $('pin').focus(); return; }
+    $('pinOk').disabled = true;
     const r = await fetch('/auth/estado?pin=' + encodeURIComponent(p)).then(x => x.json()).catch(() => null);
-    if (!r || !r.sesion) { authError('PIN incorrecto'); return; }
-    pin = p; token = '';
+    $('pinOk').disabled = false;
+    if (!r || !r.sesion) { authError('PIN incorrecto'); $('pin').value = ''; $('pin').focus(); return; }
+    pin = p; token = ''; $('pin').value = '';
     try { if (bioRegistered()) localStorage.removeItem('copiloto_pin'); else localStorage.setItem('copiloto_pin', pin); } catch (e) {}
     onUnlocked();
   });
+  $('bioToPin').addEventListener('click', () => { lockStep('lockPin'); authError(''); setTimeout(() => $('pin').focus(), 50); });
+  $('pinToBio').addEventListener('click', () => { lockStep('lockBio'); bioUnlock(); });
   // Desbloqueo con passkey (Face ID / Touch ID / huella)
+  let bioBusy = false;
   async function bioUnlock() {
-    authError('');
+    if (bioBusy) return; bioBusy = true; authError(''); $('bioHint').textContent = 'Mira al móvil…';
     try {
       const opt = await fetch('/auth/opciones-login', { method: 'POST' }).then(x => x.json());
       opt.challenge = fromB64u(opt.challenge); opt.allowCredentials = (opt.allowCredentials || []).map(c => ({ type: 'public-key', id: fromB64u(c.id) }));
@@ -269,12 +308,19 @@ input[type=password] { width: 100%; }
       const r = await fetch('/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then(x => x.json());
       if (!r.ok) throw new Error(r.error || 'no autorizado');
       token = r.token; try { sessionStorage.setItem('copiloto_token', token); } catch (e) {}
+      $('bioHint').textContent = 'Tu asistente personal';
       onUnlocked();
-    } catch (e) { authError('No se pudo desbloquear (' + (e.message || e.name) + '). Usa el PIN.'); $('pin').focus(); }
+    } catch (e) {
+      $('bioHint').textContent = 'Tu asistente personal';
+      if (/NotAllowed|AbortError|cancel/i.test(e.name + ' ' + e.message)) authError('Face ID cancelado. Toca el botón para volver a intentarlo o usa el PIN.');
+      else if (/no registrado|not registered/i.test(e.message)) { try { localStorage.removeItem('copiloto_passkey'); } catch (e2) {} authError('Este dispositivo ya no está registrado. Entra con el PIN.'); lockStep('lockPin'); }
+      else authError('No se pudo entrar con Face ID (' + (e.message || e.name) + '). Usa el PIN.');
+    } finally { bioBusy = false; }
   }
   $('bioBtn').addEventListener('click', bioUnlock);
   // Alta de este dispositivo (requiere PIN)
   async function bioSetup() {
+    $('bioSetupBtn').disabled = true;
     try {
       const opt = await fetch('/auth/opciones-registro?' + authQS(), { method: 'POST' }).then(x => x.json());
       if (opt.error) throw new Error(opt.error);
@@ -286,14 +332,17 @@ input[type=password] { width: 100%; }
       if (!r.ok) throw new Error(r.error || 'error');
       try { localStorage.setItem('copiloto_passkey', '1'); localStorage.removeItem('copiloto_pin'); } catch (e) {}
       token = r.token; try { sessionStorage.setItem('copiloto_token', token); } catch (e) {}
-      $('bioSetup').hidden = true; $('upStatus').textContent = 'Face ID / huella activado: la próxima vez la app se desbloquea con la cara.';
-    } catch (e) { $('bioSetupText').textContent = 'No se pudo activar: ' + (e.message || e.name) + '. En iPhone hace falta iOS 16 o superior y abrir la web en Safari o desde el icono de la pantalla de inicio.'; }
+      showApp(); $('upStatus').textContent = 'Face ID activado: la próxima vez entras con la cara.';
+    } catch (e) {
+      $('bioSetupText').textContent = 'No se pudo activar Face ID (' + (e.message || e.name) + '). Puedes seguir con el PIN.';
+    } finally { $('bioSetupBtn').disabled = false; }
   }
   $('bioSetupBtn').addEventListener('click', bioSetup);
-  $('bioSetupNo').addEventListener('click', () => { $('bioSetup').hidden = true; try { sessionStorage.setItem('bio_no', '1'); } catch (e) {} });
+  $('bioSetupNo').addEventListener('click', () => { try { sessionStorage.setItem('bio_no', '1'); } catch (e) {} showApp(); });
+
   // Al volver a primer plano (iOS no recarga la app): reconectar la sesión y, si ha pasado un rato, volver a bloquear
   let hiddenAt = 0; const LOCK_AFTER_MS = 60 * 1000;
-  function lockAgain() { token = ''; try { sessionStorage.removeItem('copiloto_token'); } catch (e) {} if (running) { stop(); $('go').textContent = 'Empezar'; $('go').classList.remove('on'); } showLock(); if (!$('bioBtn').hidden) bioUnlock(); }
+  function lockAgain() { token = ''; try { sessionStorage.removeItem('copiloto_token'); } catch (e) {} if (running) { stop(); $('go').textContent = 'Empezar'; $('go').classList.remove('on'); } showLock(); if (hasWebAuthn && bioRegistered()) bioUnlock(); }
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { hiddenAt = Date.now(); return; }
     const away = hiddenAt ? Date.now() - hiddenAt : 0; hiddenAt = 0;
@@ -308,9 +357,9 @@ input[type=password] { width: 100%; }
   // Arranque: si hay token de sesión válido, entra; si hay passkey, pide Face ID; si no, PIN
   (async () => {
     if (token) { const r = await fetch('/auth/estado?token=' + encodeURIComponent(token)).then(x => x.json()).catch(() => null); if (r && r.sesion) { onUnlocked(); return; } token = ''; try { sessionStorage.removeItem('copiloto_token'); } catch (e) {} }
-    if (pin && !bioRegistered()) { onUnlocked(); return; }
+    if (pin && !bioRegistered()) { showApp(); loadDocs(); loadAgenda(); return; }
     showLock();
-    if (!$('bioBtn').hidden) bioUnlock();
+    if (hasWebAuthn && bioRegistered()) bioUnlock();
   })();
   fetch('/salud').then(r => r.json()).then(j => { if (!j.clave) showErr('El servidor no tiene la clave de Gemini.'); else $('info').textContent = 'Modelo ' + j.modelo; }).catch(() => {});
 
@@ -374,7 +423,7 @@ input[type=password] { width: 100%; }
   }
   async function loadDocs() {
     if (!unlocked()) return;
-    try { const r = await fetch('/documentos?' + authQS()); if (r.status === 401) { token = ''; pin = ''; try { localStorage.removeItem('copiloto_pin'); } catch (e) {} showLock(); authError('El PIN guardado ya no es válido. Escríbelo de nuevo.'); return; } const j = await r.json(); renderDocs(j.documentos || []); } catch (e) {}
+    try { const r = await fetch('/documentos?' + authQS()); if (r.status === 401) { token = ''; pin = ''; try { localStorage.removeItem('copiloto_pin'); } catch (e) {} showLock(); authError('El PIN guardado ya no vale. Escríbelo de nuevo.'); return; } const j = await r.json(); renderDocs(j.documentos || []); } catch (e) {}
   }
   $('upFile').addEventListener('change', async () => {
     const files = [...$('upFile').files]; if (!files.length) return;
