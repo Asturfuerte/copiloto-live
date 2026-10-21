@@ -278,6 +278,20 @@ input[type=password] { width: 100%; }
   }
   $('bioSetupBtn').addEventListener('click', bioSetup);
   $('bioSetupNo').addEventListener('click', () => { $('bioSetup').hidden = true; try { sessionStorage.setItem('bio_no', '1'); } catch (e) {} });
+  // Al volver a primer plano (iOS no recarga la app): reconectar la sesión y, si ha pasado un rato, volver a bloquear
+  let hiddenAt = 0; const LOCK_AFTER_MS = 60 * 1000;
+  function lockAgain() { token = ''; try { sessionStorage.removeItem('copiloto_token'); } catch (e) {} if (running) { stop(); $('go').textContent = 'Empezar'; $('go').classList.remove('on'); } showLock(); if (!$('bioBtn').hidden) bioUnlock(); }
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { hiddenAt = Date.now(); return; }
+    const away = hiddenAt ? Date.now() - hiddenAt : 0; hiddenAt = 0;
+    if (bioRegistered() && hasWebAuthn && away > LOCK_AFTER_MS) { lockAgain(); return; }
+    if (running) { // iOS corta micro y conexión en segundo plano: reconectar
+      const dead = !ws || ws.readyState !== 1 || (actx && actx.state !== 'running');
+      if (dead || away > 5000) { stopAudio(); stopPlayback(); const old = ws; ws = null; if (old) { old.onclose = null; old.onerror = null; try { old.close(); } catch (e) {} } status('busy', 'Reconectando'); setTimeout(() => { if (running) start(); }, 300); }
+    }
+  });
+  window.addEventListener('pageshow', ev => { if (ev.persisted && bioRegistered() && hasWebAuthn) lockAgain(); });
+
   // Arranque: si hay token de sesión válido, entra; si hay passkey, pide Face ID; si no, PIN
   (async () => {
     if (token) { const r = await fetch('/auth/estado?token=' + encodeURIComponent(token)).then(x => x.json()).catch(() => null); if (r && r.sesion) { onUnlocked(); return; } token = ''; try { sessionStorage.removeItem('copiloto_token'); } catch (e) {} }
