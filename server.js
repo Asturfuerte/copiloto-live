@@ -323,6 +323,10 @@ const server = http.createServer((req, res) => {
     const pinGiven = u.searchParams.get('pin') || req.headers['x-pin'] || '';
     if (ACCESS_PIN && pinGiven !== ACCESS_PIN) return send(res, 401, { error: 'PIN incorrecto' });
     if (req.method === 'GET' && u.pathname === '/documentos') return send(res, 200, { documentos: docsList() });
+    if (req.method === 'GET' && u.pathname === '/documentos/buscar') { // prueba de búsqueda: ?q=...
+      const q = u.searchParams.get('q') || '';
+      return documentos.answerAsync(DOCS, q, GEMINI_KEY).then(r => send(res, 200, { pregunta: q, semantica: !!DOCS.embedded, ranking: DOCS.lastDebug || null, resultado: r })).catch(e => send(res, 500, { error: e.message }));
+    }
     const name = u.pathname.length > '/documentos/'.length ? safeDocName(u.pathname.slice('/documentos/'.length)) : '';
     if (req.method === 'PUT' && u.pathname.startsWith('/documentos/')) {
       if (!name) return send(res, 400, { error: 'Nombre no válido. Formatos: md, txt, pdf, docx.' });

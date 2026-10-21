@@ -214,8 +214,10 @@ async function searchHybrid(index, query, key, k = 8) {
   let qv = null;
   try { qv = norm((await embedTexts(key, [query], 'RETRIEVAL_QUERY'))[0]); } catch (e) { return [...bm.entries()].sort((a, b2) => b2[1] - a[1]).slice(0, k).map(x => index.chunks[x[0]]); }
   const bmMax = Math.max(1e-9, ...bm.values());
-  const scored = index.chunks.map((c, i) => ({ c, s: 0.45 * ((bm.get(i) || 0) / bmMax) + 0.55 * Math.max(0, dot(qv, c.vec)) }));
-  return scored.sort((a, b2) => b2.s - a.s).slice(0, k).filter(x => x.s > 0.2).map(x => x.c);
+  const scored = index.chunks.map((c, i) => { const b = (bm.get(i) || 0) / bmMax, e = Math.max(0, dot(qv, c.vec)); return { c, s: 0.45 * b + 0.55 * e, b, e }; });
+  const top = scored.sort((a, b2) => b2.s - a.s).slice(0, k).filter(x => x.s > 0.2);
+  index.lastDebug = top.map(x => ({ doc: x.c.doc, n: x.c.n, total: +x.s.toFixed(3), bm25: +x.b.toFixed(3), sem: +x.e.toFixed(3), inicio: x.c.text.slice(0, 90) }));
+  return top.map(x => x.c);
 }
 
 function format(index, hits) {
