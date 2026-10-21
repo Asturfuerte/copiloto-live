@@ -44,6 +44,13 @@ try {
 const documentos = require('./documentos');
 let DOCS = documentos.buildIndex(DOCS_DIR);
 function reindexDocs() { DOCS = documentos.buildIndex(DOCS_DIR); return DOCS; }
+// Al arrancar, OCR en segundo plano de los PDF escaneados que aún no lo tengan (p. ej. copiados a mano a la carpeta).
+(async () => {
+  let files = []; try { files = fs.readdirSync(DOCS_DIR).filter(f => /\.pdf$/i.test(f)); } catch (e) { return; }
+  for (const f of files) {
+    try { if (await documentos.ensureOcr(path.join(DOCS_DIR, f))) reindexDocs(); } catch (e) { console.log('OCR falló para ' + f + ': ' + e.message); }
+  }
+})();
 function docsTool() {
   return {
     functionDeclarations: [{
@@ -72,7 +79,7 @@ function safeDocName(raw) {
   return n;
 }
 function docsList() {
-  return DOCS.docs.map(d => { let st = {}; try { st = fs.statSync(path.join(DOCS_DIR, d.file)); } catch (e) {} return { nombre: d.name, fichero: d.file, fragmentos: d.chunks, bytes: st.size || 0, fecha: st.mtime || null }; });
+  return DOCS.docs.map(d => { let st = {}; try { st = fs.statSync(path.join(DOCS_DIR, d.file)); } catch (e) {} return { nombre: d.name, fichero: d.file, fragmentos: d.chunks, bytes: st.size || 0, fecha: st.mtime || null, ocr: fs.existsSync(path.join(DOCS_DIR, d.file + documentos.OCR_SIDECAR)) }; });
 }
 
 const KNOWLEDGE_RULES = `
@@ -281,15 +288,20 @@ const server = http.createServer((req, res) => {
       if (len > DOCS_MAX_BYTES) return send(res, 413, { error: 'Demasiado grande (máximo 50 MB).' });
       const parts = []; let size = 0; let aborted = false;
       req.on('data', c => { size += c.length; if (size > DOCS_MAX_BYTES) { aborted = true; req.destroy(); } else parts.push(c); });
-      req.on('end', () => {
+      req.on('end', async () => {
         if (aborted) return;
+        const full = path.join(DOCS_DIR, name);
         try {
-          fs.writeFileSync(path.join(DOCS_DIR, name), Buffer.concat(parts));
+          fs.writeFileSync(full, Buffer.concat(parts));
+          // PDF escaneado: OCR asíncrono antes de indexar (puede tardar ~1 s por página; la petición espera).
+          let ocr = false;
+          try { ocr = await documentos.ensureOcr(full, (i, n) => { if (i === 1 || i % 10 === 0) console.log('OCR ' + name + ': página ' + i + '/' + n); }); }
+          catch (e) { console.log('OCR falló para ' + name + ': ' + e.message); }
           reindexDocs();
           const d = DOCS.docs.find(x => x.file === name);
-          if (!d) { fs.unlinkSync(path.join(DOCS_DIR, name)); reindexDocs(); return send(res, 422, { error: 'No se pudo extraer texto del fichero (¿PDF escaneado sin texto?).' }); }
-          console.log('Documento subido: ' + name + ' (' + d.chunks + ' fragmentos)');
-          send(res, 200, { ok: true, documento: { nombre: d.name, fichero: d.file, fragmentos: d.chunks }, documentos: docsList() });
+          if (!d) { try { fs.unlinkSync(full); fs.unlinkSync(full + documentos.OCR_SIDECAR); } catch (e) {} reindexDocs(); return send(res, 422, { error: 'No se pudo extraer texto del fichero (ni con OCR).' }); }
+          console.log('Documento subido: ' + name + ' (' + d.chunks + ' fragmentos' + (ocr ? ', con OCR' : '') + ')');
+          send(res, 200, { ok: true, documento: { nombre: d.name, fichero: d.file, fragmentos: d.chunks, ocr }, documentos: docsList() });
         } catch (e) { send(res, 500, { error: 'No se pudo guardar: ' + e.message }); }
       });
       req.on('error', () => {});
@@ -298,6 +310,7 @@ const server = http.createServer((req, res) => {
     if (req.method === 'DELETE' && u.pathname.startsWith('/documentos/')) {
       if (!name) return send(res, 400, { error: 'Nombre no válido' });
       try { fs.unlinkSync(path.join(DOCS_DIR, name)); } catch (e) { return send(res, 404, { error: 'No existe' }); }
+      try { fs.unlinkSync(path.join(DOCS_DIR, name + documentos.OCR_SIDECAR)); } catch (e) {}
       reindexDocs(); console.log('Documento borrado: ' + name);
       return send(res, 200, { ok: true, documentos: docsList() });
     }

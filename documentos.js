@@ -23,11 +23,64 @@ function tokens(s) {
   return normalize(s).split(/[^a-z0-9ñ]+/).filter(w => w.length > 1 && !STOP.has(w)).map(stem).filter(Boolean);
 }
 
+// ---- OCR para PDF escaneados ----
+// El texto OCR se guarda junto al PDF como "<fichero>.pdf.ocr.txt" (no se lista como documento aparte).
+const OCR_SIDECAR = '.ocr.txt';
+const OCR_LANG = process.env.OCR_LANG || 'spa';
+function pdfPages(file) { try { const m = /Pages:\s+(\d+)/.exec(execFileSync('pdfinfo', [file]).toString()); return m ? +m[1] : 0; } catch (e) { return 0; } }
+function pdfTextLayer(file) { try { return execFileSync('pdftotext', ['-layout', '-enc', 'UTF-8', file, '-'], { maxBuffer: 64 * 1024 * 1024 }).toString('utf8'); } catch (e) { return ''; } }
+// Un PDF "sin texto" es el que tiene menos de ~40 caracteres útiles por página.
+function needsOcr(file, text) { const pages = pdfPages(file) || 1; return text.replace(/\s+/g, '').length < 40 * pages; }
+function run(cmd, args, opts) {
+  return new Promise((resolve, reject) => {
+    const { spawn } = require('child_process');
+    const p = spawn(cmd, args, Object.assign({ stdio: ['ignore', 'pipe', 'pipe'] }, opts || {}));
+    const out = []; const err = [];
+    p.stdout.on('data', d => out.push(d)); p.stderr.on('data', d => err.push(d));
+    p.on('error', reject);
+    p.on('close', code => code === 0 ? resolve(Buffer.concat(out).toString('utf8')) : reject(new Error(cmd + ' salió con ' + code + ': ' + Buffer.concat(err).toString('utf8').slice(0, 200))));
+  });
+}
+// OCR asíncrono (no bloquea las sesiones de voz): rasteriza a 200 ppp y pasa tesseract página a página.
+async function ocrPdf(file, onProgress) {
+  const os = require('os');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-'));
+  try {
+    await run('pdftoppm', ['-r', '200', '-gray', '-png', file, path.join(tmp, 'p')]);
+    const pngs = fs.readdirSync(tmp).filter(f => f.endsWith('.png')).sort();
+    let text = '';
+    for (let i = 0; i < pngs.length; i++) {
+      const t = await run('tesseract', [path.join(tmp, pngs[i]), '-', '-l', OCR_LANG, '--psm', '6']);
+      text += '\n\n===== Página ' + (i + 1) + ' =====\n' + t;
+      fs.unlinkSync(path.join(tmp, pngs[i]));
+      if (onProgress) onProgress(i + 1, pngs.length);
+    }
+    return text;
+  } finally { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (e) {} }
+}
+// Si el PDF no tiene texto y aún no tiene OCR, lo genera y guarda el sidecar. Devuelve true si hizo OCR.
+async function ensureOcr(file, onProgress) {
+  if (!/\.pdf$/i.test(file)) return false;
+  const side = file + OCR_SIDECAR;
+  if (fs.existsSync(side)) return false;
+  if (!needsOcr(file, pdfTextLayer(file))) return false;
+  const t0 = Date.now();
+  const text = await ocrPdf(file, onProgress);
+  fs.writeFileSync(side, 'Texto obtenido por OCR del PDF escaneado "' + path.basename(file) + '"; puede contener errores de lectura.\n' + text);
+  console.log('OCR de ' + path.basename(file) + ': ' + text.length + ' caracteres en ' + Math.round((Date.now() - t0) / 1000) + ' s');
+  return true;
+}
+
 function readDoc(file) {
   const ext = path.extname(file).toLowerCase();
   try {
     if (ext === '.md' || ext === '.txt') return fs.readFileSync(file, 'utf8');
-    if (ext === '.pdf') return execFileSync('pdftotext', ['-layout', '-enc', 'UTF-8', file, '-'], { maxBuffer: 64 * 1024 * 1024 }).toString('utf8');
+    if (ext === '.pdf') {
+      const side = file + OCR_SIDECAR;
+      if (fs.existsSync(side)) return fs.readFileSync(side, 'utf8');
+      const text = pdfTextLayer(file);
+      return needsOcr(file, text) ? '' : text;
+    }
     if (ext === '.docx') {
       const xml = execFileSync('unzip', ['-p', file, 'word/document.xml'], { maxBuffer: 64 * 1024 * 1024 }).toString('utf8');
       return xml.replace(/<\/w:p>/g, '\n').replace(/<w:tab\/>/g, '\t').replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'");
@@ -62,7 +115,7 @@ function chunk(text, size = 1200, overlap = 200) {
 function buildIndex(dir) {
   const index = { docs: [], chunks: [], df: new Map(), avgLen: 0 };
   let files = [];
-  try { files = fs.readdirSync(dir).filter(f => /\.(md|txt|pdf|docx)$/i.test(f) && !f.startsWith('.')).sort(); } catch (e) { return index; }
+  try { files = fs.readdirSync(dir).filter(f => /\.(md|txt|pdf|docx)$/i.test(f) && !f.startsWith('.') && !f.endsWith(OCR_SIDECAR)).sort(); } catch (e) { return index; }
   for (const f of files) {
     const text = readDoc(path.join(dir, f));
     if (!text.trim()) continue;
@@ -105,4 +158,4 @@ function answer(index, query, k = 5) {
   return hits.map(h => `[${h.doc}, fragmento ${h.n}]\n${h.text}`).join('\n\n---\n\n');
 }
 
-module.exports = { buildIndex, search, answer, tokens, chunk };
+module.exports = { buildIndex, search, answer, tokens, chunk, ensureOcr, OCR_SIDECAR };

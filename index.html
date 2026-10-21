@@ -94,7 +94,7 @@ input[type=password] { width: 100%; }
 
   <section class="panel" id="docsBox">
     <h2>Documentos</h2>
-    <p class="hint">Contratos, expedientes, sentencias, informes… (PDF, Word, texto; máx. 50 MB). El copiloto los consulta cuando le preguntas por ellos.</p>
+    <p class="hint">Contratos, expedientes, sentencias, informes… (PDF, Word, texto; máx. 50 MB; los escaneos se leen con OCR). El copiloto los consulta cuando le preguntas por ellos.</p>
     <ul class="docs" id="docsList"></ul>
     <div class="row">
       <label class="small" id="upLabel">Subir documentos <input type="file" id="upFile" multiple accept=".pdf,.docx,.md,.txt" hidden></label>
@@ -214,7 +214,7 @@ input[type=password] { width: 100%; }
     for (const d of list) {
       const li = document.createElement('li');
       const sp = document.createElement('span'); sp.textContent = d.fichero; sp.title = d.fichero;
-      const sm = document.createElement('small'); sm.textContent = fmtBytes(d.bytes) + ' · ' + d.fragmentos + ' frag.';
+      const sm = document.createElement('small'); sm.textContent = fmtBytes(d.bytes) + ' · ' + d.fragmentos + ' frag.' + (d.ocr ? ' · OCR' : '');
       const del = document.createElement('button'); del.className = 'del'; del.textContent = 'Borrar'; del.title = 'Borrar ' + d.fichero;
       del.addEventListener('click', async () => {
         if (!confirm('¿Borrar "' + d.fichero + '"?')) return;
@@ -236,7 +236,7 @@ input[type=password] { width: 100%; }
     $('upLabel').classList.add('busy'); showErr('');
     let n = 0;
     for (const f of files) {
-      $('upStatus').textContent = 'Subiendo ' + f.name + ' (' + (n + 1) + '/' + files.length + ')…';
+      $('upStatus').textContent = 'Subiendo ' + f.name + ' (' + (n + 1) + '/' + files.length + ')… Si es un escaneo, el OCR puede tardar un minuto.';
       try {
         const r = await fetch('/documentos/' + encodeURIComponent(f.name) + '?pin=' + encodeURIComponent(pin), { method: 'PUT', body: f, headers: { 'content-type': 'application/octet-stream' } });
         const j = await r.json().catch(() => ({}));
