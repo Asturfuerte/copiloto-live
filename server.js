@@ -12,17 +12,36 @@ const ACCESS_PIN = process.env.ACCESS_PIN || '';
 const LIVE_MODEL = process.env.LIVE_MODEL || 'gemini-3.8-live';
 const LIVE_VOICE = process.env.LIVE_VOICE || 'Aoede';
 const ENABLE_SEARCH = (process.env.ENABLE_SEARCH || '1') !== '0';
+const AGENT_NAME = process.env.AGENT_NAME || 'Claude';
+const KNOWLEDGE_DIR = process.env.KNOWLEDGE_DIR || path.join(__dirname, 'conocimiento');
 
 const INDEX = fs.readFileSync(path.join(__dirname, 'index.html'));
 
+// Conocimiento: todos los .md/.txt de la carpeta se añaden a las instrucciones del sistema.
+function loadKnowledge() {
+  try {
+    const files = fs.readdirSync(KNOWLEDGE_DIR).filter(f => /\.(md|txt)$/i.test(f)).sort();
+    const docs = files.map(f => fs.readFileSync(path.join(KNOWLEDGE_DIR, f), 'utf8').trim()).filter(Boolean);
+    if (docs.length) console.log('Conocimiento cargado: ' + files.join(', '));
+    return docs.join('\n\n');
+  } catch (e) { return ''; }
+}
+const KNOWLEDGE = loadKnowledge();
+const KNOWLEDGE_RULES = `
+
+=== CONOCIMIENTO PROPIO ===
+Lo que sigue es información fiable que te han dado para esta sesión. Cuando te pregunten algo que esté aquí, responde con estos datos sin buscar en internet. Si piden una hora concreta (por ejemplo "la próxima guagua"), di las dos o tres salidas más cercanas a la hora que te digan, y pregunta la hora si no la sabes. Si algo no está aquí, dilo y, si procede, búscalo.
+
+`;
+
 const PERSONA = {
-  participante: `Eres "Claude", una persona más en una conversación informal en español de España. Escuchas en directo a varias personas.
-Habla SOLO cuando aporte: si alguien dice algo falso o inexacto, corrígelo con naturalidad y educación; si te preguntan o te nombran ("Claude"), responde; de vez en cuando puedes añadir un dato breve o una pregunta que encaje. Si no hay nada que decir, responde con un silencio absoluto: no digas ni una palabra, ni saludos ni muletillas.
+  participante: `Eres "${AGENT_NAME}", una persona más en una conversación informal en español de España. Escuchas en directo a varias personas.
+Habla SOLO cuando aporte: si alguien dice algo falso o inexacto, corrígelo con naturalidad y educación; si te preguntan o te nombran ("${AGENT_NAME}"), responde; de vez en cuando puedes añadir un dato breve o una pregunta que encaje. Si no hay nada que decir, responde con un silencio absoluto: no digas ni una palabra, ni saludos ni muletillas.
 Cuando intervengas por tu cuenta (para corregir o aportar un dato), frases cortas: máximo veinticinco palabras.
 Cuando te pregunten directamente o te pidan información, responde completo: da la respuesta entera con los datos necesarios, aunque ocupe varias frases, sin cortarte a medias. Aun así, ve al grano y sin relleno.
 Tono cercano, sin listas ni enumeraciones, como quien habla en una mesa. Si no estás seguro de un dato, dilo o búscalo antes de afirmarlo. Nunca repitas lo que ya dijiste.`,
-  copiloto: `Eres "Claude", un acompañante discreto en una reunión en español de España. Escuchas en directo.
-Habla ÚNICAMENTE si alguien afirma algo claramente falso o inexacto, o si te preguntan o te nombran ("Claude"). En cualquier otro caso responde con silencio absoluto: ni una palabra, ni saludos ni muletillas.
+  copiloto: `Eres "${AGENT_NAME}", un acompañante discreto en una reunión en español de España. Escuchas en directo.
+Habla ÚNICAMENTE si alguien afirma algo claramente falso o inexacto, o si te preguntan o te nombran ("${AGENT_NAME}"). En cualquier otro caso responde con silencio absoluto: ni una palabra, ni saludos ni muletillas.
 Cuando corrijas por tu cuenta, sé breve (máximo veinte palabras), educado y concreto, y cita el dato correcto.
 Cuando te pregunten directamente o te pidan información, responde completo: da la respuesta entera con los datos necesarios, aunque ocupe varias frases, sin cortarte a medias. Aun así, ve al grano y sin relleno.
 Si no estás seguro de un dato, búscalo antes. Nunca repitas lo que ya dijiste.`,
@@ -136,7 +155,7 @@ function startSession(client, params) {
         responseModalities: ['AUDIO'],
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } }, languageCode: 'es-ES' },
       },
-      systemInstruction: { parts: [{ text: PERSONA[modo] }] },
+      systemInstruction: { parts: [{ text: PERSONA[modo] + (KNOWLEDGE ? KNOWLEDGE_RULES + KNOWLEDGE : '') }] },
       realtimeInputConfig: { automaticActivityDetection: { disabled: false, endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH', silenceDurationMs: 500 } },
       inputAudioTranscription: {},
       outputAudioTranscription: {},
@@ -148,7 +167,7 @@ function startSession(client, params) {
     () => { gem.send(setup); },
     raw => {
       let msg; try { msg = JSON.parse(raw.toString()); } catch (e) { return; }
-      if (msg.setupComplete) { ready = true; sendText(client, { tipo: 'listo', modelo: LIVE_MODEL, voz: voice }); for (const p of pending) gem.send(p); pending.length = 0; return; }
+      if (msg.setupComplete) { ready = true; sendText(client, { tipo: 'listo', modelo: LIVE_MODEL, voz: voice, nombre: AGENT_NAME, conocimiento: KNOWLEDGE.length }); for (const p of pending) gem.send(p); pending.length = 0; return; }
       const sc = msg.serverContent;
       if (sc) {
         if (sc.interrupted) sendText(client, { tipo: 'interrumpido' });
@@ -186,7 +205,7 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store, no-cache, must-revalidate', 'pragma': 'no-cache' });
     return res.end(INDEX);
   }
-  if (req.method === 'GET' && req.url === '/salud') return send(res, 200, { ok: true, clave: !!GEMINI_KEY, modelo: LIVE_MODEL, voz: LIVE_VOICE, busqueda: ENABLE_SEARCH });
+  if (req.method === 'GET' && req.url === '/salud') return send(res, 200, { ok: true, clave: !!GEMINI_KEY, modelo: LIVE_MODEL, voz: LIVE_VOICE, busqueda: ENABLE_SEARCH, nombre: AGENT_NAME, conocimiento_chars: KNOWLEDGE.length });
   send(res, 404, { error: 'No encontrado' });
 });
 

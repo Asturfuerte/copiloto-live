@@ -100,7 +100,7 @@ input[type=password] { width: 100%; }
   // ---- transcripción en pantalla ----
   function line(cls) { const d = document.createElement('div'); d.className = 't ' + cls; $('transcript').append(d); $('transcript').scrollTop = 1e9; return d; }
   function onHeard(t) { curIn += t; if (!inEl) inEl = line('me'); inEl.textContent = curIn; $('liveIn').textContent = '—'; }
-  function onSaid(t) { curOut += t; if (!outEl) outEl = line('ai'); outEl.textContent = 'Claude: ' + curOut; }
+  function onSaid(t) { curOut += t; if (!outEl) outEl = line('ai'); outEl.textContent = (window.agentName || 'Claude') + ': ' + curOut; }
   function endTurn() { curIn = ''; curOut = ''; inEl = null; outEl = null; }
 
   // ---- audio de salida (PCM16 24 kHz) ----
@@ -152,7 +152,7 @@ input[type=password] { width: 100%; }
     ws.onmessage = ev => {
       if (ev.data instanceof ArrayBuffer) { playChunk(ev.data); return; }
       let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
-      if (m.tipo === 'listo') { status('on', 'Escuchando'); $('info').textContent = 'Modelo ' + m.modelo + ' · voz ' + m.voz; }
+      if (m.tipo === 'listo') { status('on', 'Escuchando'); if (m.nombre) window.agentName = m.nombre; $('info').textContent = 'Modelo ' + m.modelo + ' · voz ' + m.voz + (m.nombre ? ' · responde a "' + m.nombre + '"' : '') + (m.conocimiento ? ' · con conocimiento' : ''); }
       else if (m.tipo === 'oido') onHeard(m.texto);
       else if (m.tipo === 'dicho') onSaid(m.texto);
       else if (m.tipo === 'interrumpido') { stopPlayback(); status('on', 'Escuchando'); }
