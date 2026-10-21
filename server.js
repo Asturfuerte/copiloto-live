@@ -45,7 +45,10 @@ try {
 } catch (e) { console.log('No se pudo preparar la carpeta de documentos: ' + e.message); }
 const documentos = require('./documentos');
 let DOCS = documentos.buildIndex(DOCS_DIR);
-function reindexDocs() { DOCS = documentos.buildIndex(DOCS_DIR); return DOCS; }
+// Embeddings en segundo plano (búsqueda semántica); hasta que estén, se busca solo por palabras clave.
+function embedDocs(idx) { documentos.ensureEmbeddings(idx, DOCS_DIR, GEMINI_KEY, console.log).catch(e => console.log('Embeddings no disponibles: ' + e.message)); }
+embedDocs(DOCS);
+function reindexDocs() { DOCS = documentos.buildIndex(DOCS_DIR); embedDocs(DOCS); return DOCS; }
 // Cola de OCR en segundo plano (uno a la vez). OCR_PENDING: fichero -> { pagina, total, error }.
 const OCR_PENDING = new Map();
 let ocrChain = Promise.resolve();
@@ -261,17 +264,17 @@ function startSession(client, params) {
       if (msg.toolCall) {
         // Google Search se resuelve en el lado de Google. consultar_documentos la resolvemos aquí; el resto se rechaza limpiamente.
         const calls = msg.toolCall.functionCalls || [];
-        const responses = calls.map(c => {
+        Promise.all(calls.map(async c => {
           if (c.name === 'consultar_documentos') {
             const pregunta = String((c.args && c.args.pregunta) || '');
             sendText(client, { tipo: 'aviso', texto: 'Consultando documentos: ' + pregunta });
-            const result = documentos.answer(DOCS, pregunta);
-            console.log('consultar_documentos("' + pregunta + '") -> ' + result.length + ' chars');
+            const t0 = Date.now();
+            const result = await documentos.answerAsync(DOCS, pregunta, GEMINI_KEY);
+            console.log('consultar_documentos("' + pregunta + '") -> ' + result.length + ' chars en ' + (Date.now() - t0) + ' ms' + (DOCS.embedded ? '' : ' (sin embeddings)'));
             return { id: c.id, name: c.name, response: { result } };
           }
           return { id: c.id, name: c.name, response: { result: 'no disponible' } };
-        });
-        gem.send({ toolResponse: { functionResponses: responses } });
+        })).then(responses => { if (!closed) gem.send({ toolResponse: { functionResponses: responses } }); });
       }
     },
     reason => { if (!closed) { closed = true; sendText(client, { tipo: 'cerrado', motivo: reason }); try { client.end(); } catch (e) {} } }
@@ -312,7 +315,7 @@ const server = http.createServer((req, res) => {
     const f = path.join(PUBLIC_DIR, req.url.slice(1));
     if (fs.existsSync(f)) { res.writeHead(200, { 'content-type': MIME[path.extname(f)] || 'application/octet-stream', 'cache-control': 'public, max-age=86400' }); return res.end(fs.readFileSync(f)); }
   }
-  if (req.method === 'GET' && req.url === '/salud') return send(res, 200, { ok: true, clave: !!GEMINI_KEY, modelo: LIVE_MODEL, voz: LIVE_VOICE, busqueda: ENABLE_SEARCH, nombre: AGENT_NAME, conocimiento_chars: KNOWLEDGE.length, documentos: DOCS.docs.map(d => ({ nombre: d.name, fragmentos: d.chunks })) });
+  if (req.method === 'GET' && req.url === '/salud') return send(res, 200, { ok: true, clave: !!GEMINI_KEY, modelo: LIVE_MODEL, voz: LIVE_VOICE, busqueda: ENABLE_SEARCH, nombre: AGENT_NAME, conocimiento_chars: KNOWLEDGE.length, busqueda_semantica: !!DOCS.embedded, documentos: DOCS.docs.map(d => ({ nombre: d.name, fragmentos: d.chunks })) });
 
   // ---- Gestión de documentos (misma protección que la sesión: el PIN) ----
   const u = new URL(req.url, 'http://x');

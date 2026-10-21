@@ -135,11 +135,11 @@ function buildIndex(dir) {
   return index;
 }
 
-function search(index, query, k = 5) {
-  const N = index.chunks.length; if (!N) return [];
-  const q = [...new Set(tokens(query))]; if (!q.length) return [];
+function bm25Scores(index, query) {
+  const N = index.chunks.length; const out = new Map(); if (!N) return out;
+  const q = [...new Set(tokens(query))]; if (!q.length) return out;
   const k1 = 1.5, b = 0.75;
-  const scored = index.chunks.map(c => {
+  index.chunks.forEach((c, i) => {
     let s = 0;
     for (const w of q) {
       const f = c.tf.get(w); if (!f) continue;
@@ -147,16 +147,83 @@ function search(index, query, k = 5) {
       const idf = Math.log(1 + (N - df + 0.5) / (df + 0.5));
       s += idf * (f * (k1 + 1)) / (f + k1 * (1 - b + b * c.len / index.avgLen));
     }
-    return { c, s };
-  }).filter(x => x.s > 0).sort((a, b2) => b2.s - a.s);
-  return scored.slice(0, k).map(x => x.c);
+    if (s > 0) out.set(i, s);
+  });
+  return out;
 }
 
-function answer(index, query, k = 8) {
-  const hits = search(index, query, k);
+function search(index, query, k = 5) {
+  const sc = bm25Scores(index, query);
+  return [...sc.entries()].sort((a, b2) => b2[1] - a[1]).slice(0, k).map(x => index.chunks[x[0]]);
+}
+
+// ---- Embeddings (búsqueda semántica) con la API de Gemini; misma clave que el modelo de voz ----
+// Caché en <DOCS_DIR>/.embeddings.json por hash del texto, así un reinicio no vuelve a pagar ni esperar.
+const EMBED_MODEL = process.env.EMBED_MODEL || 'gemini-embedding-001';
+const EMBED_DIM = Number(process.env.EMBED_DIM || 768);
+function sha(t) { return require('crypto').createHash('sha1').update(t).digest('hex'); }
+function geminiPost(key, pathq, body) {
+  const https = require('https');
+  return new Promise((resolve, reject) => {
+    const data = Buffer.from(JSON.stringify(body));
+    const req = https.request({ host: 'generativelanguage.googleapis.com', path: pathq + '?key=' + encodeURIComponent(key), method: 'POST', headers: { 'content-type': 'application/json', 'content-length': data.length } }, res => {
+      const bufs = []; res.on('data', d => bufs.push(d));
+      res.on('end', () => { const txt = Buffer.concat(bufs).toString('utf8'); if (res.statusCode !== 200) return reject(new Error('Gemini ' + res.statusCode + ': ' + txt.slice(0, 200))); try { resolve(JSON.parse(txt)); } catch (e) { reject(e); } });
+    });
+    req.on('error', reject); req.setTimeout(60000, () => req.destroy(new Error('timeout'))); req.write(data); req.end();
+  });
+}
+async function embedTexts(key, texts, taskType) {
+  const out = [];
+  for (let i = 0; i < texts.length; i += 50) {
+    const batch = texts.slice(i, i + 50);
+    const r = await geminiPost(key, '/v1beta/models/' + EMBED_MODEL + ':batchEmbedContents', {
+      requests: batch.map(t => ({ model: 'models/' + EMBED_MODEL, content: { parts: [{ text: t.slice(0, 6000) }] }, taskType, outputDimensionality: EMBED_DIM })),
+    });
+    for (const e of r.embeddings) out.push(Float32Array.from(e.values));
+  }
+  return out;
+}
+function norm(v) { let s = 0; for (const x of v) s += x * x; s = Math.sqrt(s) || 1; return v.map(x => x / s); }
+function dot(a, b) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; }
+
+// Calcula (o lee de caché) el embedding de cada fragmento. Asíncrono; mientras no termina, la búsqueda es solo BM25.
+async function ensureEmbeddings(index, dir, key, log) {
+  if (!key || !index.chunks.length) return;
+  const cachePath = path.join(dir, '.embeddings.json');
+  let cache = {}; try { cache = JSON.parse(fs.readFileSync(cachePath, 'utf8')); if (cache._model !== EMBED_MODEL || cache._dim !== EMBED_DIM) cache = {}; } catch (e) {}
+  const pending = index.chunks.map((c, i) => ({ c, i, h: sha(c.text) })).filter(x => !cache[x.h]);
+  if (pending.length) {
+    const t0 = Date.now();
+    const vecs = await embedTexts(key, pending.map(x => x.c.text), 'RETRIEVAL_DOCUMENT');
+    pending.forEach((x, j) => { cache[x.h] = Array.from(vecs[j]); });
+    cache._model = EMBED_MODEL; cache._dim = EMBED_DIM;
+    const keep = new Set(index.chunks.map(c => sha(c.text)));
+    for (const h of Object.keys(cache)) if (!h.startsWith('_') && !keep.has(h)) delete cache[h];
+    fs.writeFileSync(cachePath, JSON.stringify(cache));
+    if (log) log('Embeddings: ' + pending.length + ' fragmentos nuevos en ' + Math.round((Date.now() - t0) / 1000) + ' s');
+  }
+  for (const c of index.chunks) c.vec = norm(Float32Array.from(cache[sha(c.text)]));
+  index.embedded = true;
+}
+
+// Búsqueda híbrida: BM25 (palabras exactas) + coseno (significado). Si no hay embeddings aún, solo BM25.
+async function searchHybrid(index, query, key, k = 8) {
+  const bm = bm25Scores(index, query);
+  if (!index.embedded || !key) return [...bm.entries()].sort((a, b2) => b2[1] - a[1]).slice(0, k).map(x => index.chunks[x[0]]);
+  let qv = null;
+  try { qv = norm((await embedTexts(key, [query], 'RETRIEVAL_QUERY'))[0]); } catch (e) { return [...bm.entries()].sort((a, b2) => b2[1] - a[1]).slice(0, k).map(x => index.chunks[x[0]]); }
+  const bmMax = Math.max(1e-9, ...bm.values());
+  const scored = index.chunks.map((c, i) => ({ c, s: 0.45 * ((bm.get(i) || 0) / bmMax) + 0.55 * Math.max(0, dot(qv, c.vec)) }));
+  return scored.sort((a, b2) => b2.s - a.s).slice(0, k).filter(x => x.s > 0.2).map(x => x.c);
+}
+
+function format(index, hits) {
   if (!index.chunks.length) return 'No hay documentos cargados.';
   if (!hits.length) return 'No he encontrado nada sobre eso en los documentos (' + index.docs.map(d => d.name).join(', ') + ').';
   return hits.map(h => `[${h.doc}, fragmento ${h.n}]\n${h.text}`).join('\n\n---\n\n');
 }
+function answer(index, query, k = 8) { return format(index, search(index, query, k)); }
+async function answerAsync(index, query, key, k = 8) { return format(index, await searchHybrid(index, query, key, k)); }
 
-module.exports = { buildIndex, search, answer, tokens, chunk, ensureOcr, pdfNeedsOcr, OCR_SIDECAR };
+module.exports = { buildIndex, search, answer, answerAsync, ensureEmbeddings, tokens, chunk, ensureOcr, pdfNeedsOcr, OCR_SIDECAR };
