@@ -47,7 +47,7 @@ try { $s = Invoke-RestMethod -Uri "$url/salud" -TimeoutSec 15; Log ("Servidor OK
 
 while ($true) {
   try {
-    $ficheros = Get-ChildItem -Path $carpeta -File | Where-Object { $ext -contains $_.Extension.ToLower() -and -not $_.Name.StartsWith('.') -and -not $_.Name.StartsWith('~$') }
+    $ficheros = Get-ChildItem -Path $carpeta -File | Where-Object { $ext -contains $_.Extension.ToLower() -and -not $_.Name.StartsWith('.') -and -not $_.Name.StartsWith('~$') -and $_.Name -notlike 'LEEME*' }
     $nombres = @{}
     foreach ($f in $ficheros) {
       $nombres[$f.Name] = $true
