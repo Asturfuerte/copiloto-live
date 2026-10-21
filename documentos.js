@@ -152,7 +152,7 @@ function search(index, query, k = 5) {
   return scored.slice(0, k).map(x => x.c);
 }
 
-function answer(index, query, k = 5) {
+function answer(index, query, k = 8) {
   const hits = search(index, query, k);
   if (!index.chunks.length) return 'No hay documentos cargados.';
   if (!hits.length) return 'No he encontrado nada sobre eso en los documentos (' + index.docs.map(d => d.name).join(', ') + ').';

@@ -86,7 +86,7 @@ function docsRules() {
 
 === DOCUMENTOS ===
 Tienes la función consultar_documentos. Documentos cargados: ${DOCS.docs.map(d => d.name).join('; ')}.
-Cuando te pregunten algo que pueda estar en esos documentos, llama a la función ANTES de responder y contesta solo con lo que devuelva, citando el documento. Si no devuelve nada útil, di que no lo has encontrado en los documentos. Nunca inventes cláusulas, cifras ni fechas.
+Cuando te pregunten algo que pueda estar en esos documentos, llama a la función ANTES de responder y contesta solo con lo que devuelva, citando el documento. La búsqueda es por palabras clave: usa en la pregunta los términos concretos que aparecerían en el texto (nombres propios, números de artículo, años, fechas, palabras técnicas como "recurso", "ECLI", "cláusula"), no frases genéricas. Si no encuentras lo que buscas, prueba una segunda vez con otras palabras. Si la pregunta tiene varias partes, responde las que sí hayas encontrado y di cuál no. Nunca inventes cláusulas, cifras ni fechas.
 ` : '';
 }
 function safeDocName(raw) {
