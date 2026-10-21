@@ -78,7 +78,10 @@ function docsTool() {
       description: 'Busca en los documentos del cliente (contratos, expedientes, sentencias, informes, catálogos) y devuelve los fragmentos más relevantes. Úsala siempre que te pregunten por el contenido de un documento, un expediente, un contrato, una cláusula, una fecha o una cifra que pueda estar en ellos. Documentos disponibles: ' + (DOCS.docs.map(d => d.name).join('; ') || 'ninguno') + '.',
       parameters: {
         type: 'OBJECT',
-        properties: { pregunta: { type: 'STRING', description: 'Lo que quieres encontrar, con las palabras clave concretas (nombres, conceptos, fechas).' } },
+        properties: {
+          pregunta: { type: 'STRING', description: 'Qué quieres encontrar DENTRO del documento: el concepto, cláusula, dato o pregunta concreta (p. ej. "sentencias anteriores citadas sobre subsanación", "renta mensual y preaviso"). No repitas aquí el nombre del documento.' },
+          documento: { type: 'STRING', description: 'Opcional: nombre (o parte) del documento donde buscar, si se sabe (p. ej. "STS Unión Ereza", "escritura constitución").' },
+        },
         required: ['pregunta'],
       },
     }],
@@ -89,7 +92,7 @@ function docsRules() {
 
 === DOCUMENTOS ===
 Tienes la función consultar_documentos. Documentos cargados: ${DOCS.docs.map(d => d.name).join('; ')}.
-Cuando te pregunten algo que pueda estar en esos documentos, llama a la función ANTES de responder y contesta solo con lo que devuelva, citando el documento. La búsqueda es por palabras clave: usa en la pregunta los términos concretos que aparecerían en el texto (nombres propios, números de artículo, años, fechas, palabras técnicas como "recurso", "ECLI", "cláusula"), no frases genéricas. Si no encuentras lo que buscas, prueba una segunda vez con otras palabras. Si la pregunta tiene varias partes, responde las que sí hayas encontrado y di cuál no. Nunca inventes cláusulas, cifras ni fechas.
+Cuando te pregunten algo que pueda estar en esos documentos, llama a la función ANTES de responder y contesta solo con lo que devuelva, citando el documento. En "pregunta" pon solo lo que buscas dentro del texto (concepto, dato, cláusula), con términos concretos; el nombre del documento va aparte en "documento". Si no encuentras lo que buscas, prueba una segunda vez con otras palabras. Si la pregunta tiene varias partes, responde las que sí hayas encontrado y di cuál no. Nunca inventes cláusulas, cifras ni fechas.
 ` : '';
 }
 function safeDocName(raw) {
@@ -267,9 +270,10 @@ function startSession(client, params) {
         Promise.all(calls.map(async c => {
           if (c.name === 'consultar_documentos') {
             const pregunta = String((c.args && c.args.pregunta) || '');
-            sendText(client, { tipo: 'aviso', texto: 'Consultando documentos: ' + pregunta });
+            const documento = c.args && c.args.documento ? String(c.args.documento) : '';
+            sendText(client, { tipo: 'aviso', texto: 'Consultando documentos: ' + pregunta + (documento ? ' [' + documento + ']' : '') });
             const t0 = Date.now();
-            const result = await documentos.answerAsync(DOCS, pregunta, GEMINI_KEY);
+            const result = await documentos.answerAsync(DOCS, pregunta, GEMINI_KEY, 8, documento);
             console.log('consultar_documentos("' + pregunta + '") -> ' + result.length + ' chars en ' + (Date.now() - t0) + ' ms' + (DOCS.embedded ? '' : ' (sin embeddings)'));
             return { id: c.id, name: c.name, response: { result } };
           }
@@ -325,7 +329,7 @@ const server = http.createServer((req, res) => {
     if (req.method === 'GET' && u.pathname === '/documentos') return send(res, 200, { documentos: docsList() });
     if (req.method === 'GET' && u.pathname === '/documentos/buscar') { // prueba de búsqueda: ?q=...
       const q = u.searchParams.get('q') || '';
-      return documentos.answerAsync(DOCS, q, GEMINI_KEY).then(r => send(res, 200, { pregunta: q, semantica: !!DOCS.embedded, ranking: DOCS.lastDebug || null, resultado: r })).catch(e => send(res, 500, { error: e.message }));
+      return documentos.answerAsync(DOCS, q, GEMINI_KEY, 8, u.searchParams.get('doc') || '').then(r => send(res, 200, { pregunta: q, semantica: !!DOCS.embedded, ranking: DOCS.lastDebug || null, resultado: r })).catch(e => send(res, 500, { error: e.message }));
     }
     const name = u.pathname.length > '/documentos/'.length ? safeDocName(u.pathname.slice('/documentos/'.length)) : '';
     if (req.method === 'PUT' && u.pathname.startsWith('/documentos/')) {

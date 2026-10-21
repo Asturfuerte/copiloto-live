@@ -135,9 +135,12 @@ function buildIndex(dir) {
   return index;
 }
 
+// Palabras que forman parte de los nombres de los documentos: identifican el documento, no el contenido.
+function docNameTokens(index) { if (!index._nameToks) index._nameToks = new Set(index.docs.flatMap(d => tokens(d.name))); return index._nameToks; }
 function bm25Scores(index, query) {
   const N = index.chunks.length; const out = new Map(); if (!N) return out;
-  const q = [...new Set(tokens(query))]; if (!q.length) return out;
+  const names = docNameTokens(index);
+  let q = [...new Set(tokens(query))]; const q2 = q.filter(w => !names.has(w)); if (q2.length) q = q2; if (!q.length) return out;
   const k1 = 1.5, b = 0.75;
   index.chunks.forEach((c, i) => {
     let s = 0;
@@ -208,14 +211,27 @@ async function ensureEmbeddings(index, dir, key, log) {
 }
 
 // Búsqueda híbrida: BM25 (palabras exactas) + coseno (significado). Si no hay embeddings aún, solo BM25.
-async function searchHybrid(index, query, key, k = 8) {
+// Si se indica un documento (nombre o parte), se busca solo en él; si no casa con ninguno, en todos.
+function pickDoc(index, documento) {
+  if (!documento) return null;
+  const want = tokens(documento); if (!want.length) return null;
+  let best = null, bestScore = 0;
+  for (const d of index.docs) { const dt = new Set(tokens(d.name)); const sc = want.filter(w => dt.has(w)).length / want.length; if (sc > bestScore) { bestScore = sc; best = d.name; } }
+  return bestScore >= 0.5 ? best : null;
+}
+async function searchHybrid(index, query, key, k = 8, documento) {
+  const only = pickDoc(index, documento);
+  const allowed = i => !only || index.chunks[i].doc === only;
   const bm = bm25Scores(index, query);
-  if (!index.embedded || !key) return [...bm.entries()].sort((a, b2) => b2[1] - a[1]).slice(0, k).map(x => index.chunks[x[0]]);
+  const bmTop = () => [...bm.entries()].filter(x => allowed(x[0])).sort((a, b2) => b2[1] - a[1]).slice(0, k).map(x => index.chunks[x[0]]);
+  if (!index.embedded || !key) return bmTop();
   let qv = null;
-  try { qv = norm((await embedTexts(key, [query], 'RETRIEVAL_QUERY'))[0]); } catch (e) { return [...bm.entries()].sort((a, b2) => b2[1] - a[1]).slice(0, k).map(x => index.chunks[x[0]]); }
+  try { qv = norm((await embedTexts(key, [query], 'RETRIEVAL_QUERY'))[0]); } catch (e) { return bmTop(); }
   const bmMax = Math.max(1e-9, ...bm.values());
-  const scored = index.chunks.map((c, i) => { const b = (bm.get(i) || 0) / bmMax, e = Math.max(0, dot(qv, c.vec)); return { c, s: 0.45 * b + 0.55 * e, b, e }; });
-  const top = scored.sort((a, b2) => b2.s - a.s).slice(0, k).filter(x => x.s > 0.2);
+  const cos = index.chunks.map((c, i) => allowed(i) ? Math.max(0, dot(qv, c.vec)) : -1);
+  const valid = cos.filter(x => x >= 0); const cMin = Math.min(...valid), cMax = Math.max(...valid);
+  const scored = index.chunks.map((c, i) => { if (!allowed(i)) return null; const b = (bm.get(i) || 0) / bmMax; const e = cMax > cMin ? (cos[i] - cMin) / (cMax - cMin) : 0; return { c, s: 0.4 * b + 0.6 * e, b, e }; }).filter(Boolean);
+  const top = scored.sort((a, b2) => b2.s - a.s).slice(0, k).filter(x => x.s > 0.15);
   index.lastDebug = top.map(x => ({ doc: x.c.doc, n: x.c.n, total: +x.s.toFixed(3), bm25: +x.b.toFixed(3), sem: +x.e.toFixed(3), inicio: x.c.text.slice(0, 90) }));
   return top.map(x => x.c);
 }
@@ -226,6 +242,6 @@ function format(index, hits) {
   return hits.map(h => `[${h.doc}, fragmento ${h.n}]\n${h.text}`).join('\n\n---\n\n');
 }
 function answer(index, query, k = 8) { return format(index, search(index, query, k)); }
-async function answerAsync(index, query, key, k = 8) { return format(index, await searchHybrid(index, query, key, k)); }
+async function answerAsync(index, query, key, k = 8, documento) { return format(index, await searchHybrid(index, query, key, k, documento)); }
 
 module.exports = { buildIndex, search, answer, answerAsync, ensureEmbeddings, tokens, chunk, ensureOcr, pdfNeedsOcr, OCR_SIDECAR };
