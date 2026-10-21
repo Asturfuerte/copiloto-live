@@ -15,7 +15,9 @@ const ENABLE_SEARCH = (process.env.ENABLE_SEARCH || '1') !== '0';
 const AGENT_NAME = process.env.AGENT_NAME || 'Claude';
 const KNOWLEDGE_DIR = process.env.KNOWLEDGE_DIR || path.join(__dirname, 'conocimiento');
 
-const INDEX = fs.readFileSync(path.join(__dirname, 'index.html'));
+const INDEX = Buffer.from(fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8').split('__AGENT_NAME__').join(AGENT_NAME.replace(/[<>&"]/g, '')));
+const PUBLIC_DIR = path.join(__dirname, 'public');
+const MIME = { '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json', '.json': 'application/json' };
 
 // Conocimiento: todos los .md/.txt de la carpeta se añaden a las instrucciones del sistema.
 function loadKnowledge() {
@@ -292,6 +294,23 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && (req.url === '/' || req.url.startsWith('/?'))) {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store, no-cache, must-revalidate', 'pragma': 'no-cache' });
     return res.end(INDEX);
+  }
+  if (req.method === 'GET' && req.url === '/manifest.webmanifest') {
+    res.writeHead(200, { 'content-type': 'application/manifest+json; charset=utf-8', 'cache-control': 'no-cache' });
+    return res.end(JSON.stringify({
+      name: AGENT_NAME + ' · Copiloto Live', short_name: AGENT_NAME, description: 'Asistente de voz en tiempo real para reuniones.',
+      start_url: '/', scope: '/', display: 'standalone', orientation: 'portrait', lang: 'es',
+      background_color: '#f3f5f8', theme_color: '#23466e',
+      icons: [
+        { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+        { src: '/icon-512.png', sizes: '512x512', type: 'image/png' },
+        { src: '/icon-512-maskable.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+      ],
+    }));
+  }
+  if (req.method === 'GET' && /^\/[\w.-]+\.(png|svg|ico)$/.test(req.url)) {
+    const f = path.join(PUBLIC_DIR, req.url.slice(1));
+    if (fs.existsSync(f)) { res.writeHead(200, { 'content-type': MIME[path.extname(f)] || 'application/octet-stream', 'cache-control': 'public, max-age=86400' }); return res.end(fs.readFileSync(f)); }
   }
   if (req.method === 'GET' && req.url === '/salud') return send(res, 200, { ok: true, clave: !!GEMINI_KEY, modelo: LIVE_MODEL, voz: LIVE_VOICE, busqueda: ENABLE_SEARCH, nombre: AGENT_NAME, conocimiento_chars: KNOWLEDGE.length, documentos: DOCS.docs.map(d => ({ nombre: d.name, fragmentos: d.chunks })) });
 
