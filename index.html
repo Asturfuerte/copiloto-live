@@ -233,7 +233,7 @@ input[type=password] { width: 100%; }
   // ---- PIN / Face ID ----
   function unlocked() { return !!(token || pin); }
   function pinOk() { if (unlocked()) return true; showLock(); return false; }
-  function showLock() { $('pinBox').hidden = false; $('bioBtn').hidden = !(hasWebAuthn && bioRegistered()); if ($('bioBtn').hidden) $('pin').focus(); }
+  function showLock() { $('pinBox').hidden = false; $('bioSetup').hidden = true; $('bioBtn').hidden = !(hasWebAuthn && bioRegistered()); if ($('bioBtn').hidden) $('pin').focus(); }
   function authError(t) { $('authErr').textContent = t; $('authErr').hidden = !t; }
   function onUnlocked() { $('pinBox').hidden = true; authError(''); showErr(''); loadDocs(); if (pin && hasWebAuthn && !bioRegistered() && !sessionStorage.getItem('bio_no')) $('bioSetup').hidden = false; }
   $('pin').addEventListener('keydown', e => { if (e.key === 'Enter') $('pinOk').click(); });
@@ -316,7 +316,7 @@ input[type=password] { width: 100%; }
   }
   async function loadDocs() {
     if (!unlocked()) return;
-    try { const r = await fetch('/documentos?' + authQS()); if (r.status === 401) { token = ''; pin = ''; showLock(); return; } const j = await r.json(); renderDocs(j.documentos || []); } catch (e) {}
+    try { const r = await fetch('/documentos?' + authQS()); if (r.status === 401) { token = ''; pin = ''; try { localStorage.removeItem('copiloto_pin'); } catch (e) {} showLock(); authError('El PIN guardado ya no es válido. Escríbelo de nuevo.'); return; } const j = await r.json(); renderDocs(j.documentos || []); } catch (e) {}
   }
   $('upFile').addEventListener('change', async () => {
     const files = [...$('upFile').files]; if (!files.length) return;
