@@ -47,6 +47,14 @@ input[type=password] { width: 100%; }
 .err { color: var(--err); font-size: .9rem; margin: 0; }
 .meter { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
 .meter > div { height: 100%; width: 0; background: var(--ok); transition: width .08s; }
+.docs { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.docs li { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; background: var(--bg); font-size: .95rem; }
+.docs li span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.docs li small { color: var(--muted); white-space: nowrap; }
+.docs .del { border: 0; background: none; color: var(--err); cursor: pointer; font: inherit; padding: 2px 6px; }
+.docs .empty { color: var(--muted); font-style: italic; background: none; }
+#upLabel { display: inline-block; }
+#upLabel.busy { opacity: .6; pointer-events: none; }
 </style>
 </head>
 <body>
@@ -82,6 +90,16 @@ input[type=password] { width: 100%; }
     <h2>Conversación</h2>
     <div class="transcript" id="transcript"></div>
     <div class="live" id="liveIn">—</div>
+  </section>
+
+  <section class="panel" id="docsBox">
+    <h2>Documentos</h2>
+    <p class="hint">Contratos, expedientes, sentencias, informes… (PDF, Word, texto; máx. 50 MB). El copiloto los consulta cuando le preguntas por ellos.</p>
+    <ul class="docs" id="docsList"></ul>
+    <div class="row">
+      <label class="small" id="upLabel">Subir documentos <input type="file" id="upFile" multiple accept=".pdf,.docx,.md,.txt" hidden></label>
+      <span class="hint" id="upStatus"></span>
+    </div>
   </section>
 </div>
 
@@ -187,6 +205,50 @@ input[type=password] { width: 100%; }
   $('pinOk').addEventListener('click', () => { pin = $('pin').value.trim(); try { localStorage.setItem('copiloto_pin', pin); } catch (e) {} $('pinBox').hidden = true; showErr(''); });
   if (!pin) $('pinBox').hidden = false;
   fetch('/salud').then(r => r.json()).then(j => { if (!j.clave) showErr('El servidor no tiene la clave de Gemini.'); else $('info').textContent = 'Modelo ' + j.modelo; }).catch(() => {});
+
+  // ---- Documentos ----
+  const fmtBytes = b => b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB';
+  function renderDocs(list) {
+    const ul = $('docsList'); ul.innerHTML = '';
+    if (!list.length) { const li = document.createElement('li'); li.className = 'empty'; li.textContent = 'Todavía no hay documentos.'; ul.append(li); return; }
+    for (const d of list) {
+      const li = document.createElement('li');
+      const sp = document.createElement('span'); sp.textContent = d.fichero; sp.title = d.fichero;
+      const sm = document.createElement('small'); sm.textContent = fmtBytes(d.bytes) + ' · ' + d.fragmentos + ' frag.';
+      const del = document.createElement('button'); del.className = 'del'; del.textContent = 'Borrar'; del.title = 'Borrar ' + d.fichero;
+      del.addEventListener('click', async () => {
+        if (!confirm('¿Borrar "' + d.fichero + '"?')) return;
+        const r = await fetch('/documentos/' + encodeURIComponent(d.fichero) + '?pin=' + encodeURIComponent(pin), { method: 'DELETE' });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) { showErr(j.error || 'No se pudo borrar'); return; }
+        renderDocs(j.documentos || []);
+      });
+      li.append(sp, sm, del); ul.append(li);
+    }
+  }
+  async function loadDocs() {
+    if (!pin && !$('pinBox').hidden) return;
+    try { const r = await fetch('/documentos?pin=' + encodeURIComponent(pin)); if (r.status === 401) { $('pinBox').hidden = false; return; } const j = await r.json(); renderDocs(j.documentos || []); } catch (e) {}
+  }
+  $('upFile').addEventListener('change', async () => {
+    const files = [...$('upFile').files]; if (!files.length) return;
+    if (!pinOk()) return;
+    $('upLabel').classList.add('busy'); showErr('');
+    let n = 0;
+    for (const f of files) {
+      $('upStatus').textContent = 'Subiendo ' + f.name + ' (' + (n + 1) + '/' + files.length + ')…';
+      try {
+        const r = await fetch('/documentos/' + encodeURIComponent(f.name) + '?pin=' + encodeURIComponent(pin), { method: 'PUT', body: f, headers: { 'content-type': 'application/octet-stream' } });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) { showErr(f.name + ': ' + (j.error || 'error ' + r.status)); continue; }
+        n++; renderDocs(j.documentos || []);
+      } catch (e) { showErr(f.name + ': no se pudo subir'); }
+    }
+    $('upStatus').textContent = n ? n + ' documento' + (n > 1 ? 's' : '') + ' listo' + (n > 1 ? 's' : '') + ' para consultar.' : '';
+    $('upLabel').classList.remove('busy'); $('upFile').value = '';
+  });
+  $('pinOk').addEventListener('click', loadDocs);
+  loadDocs();
 })();
 </script>
 </body>

@@ -29,26 +29,51 @@ function loadKnowledge() {
 const KNOWLEDGE = loadKnowledge();
 
 // Documentos: carpeta con md/txt/pdf/docx que se indexa al arrancar y se consulta con la función consultar_documentos.
-const DOCS_DIR = process.env.DOCS_DIR || path.join(__dirname, 'documentos');
+// DOCS_DIR puede ser un volumen persistente (p. ej. /data/documentos); si está vacío se siembra con los documentos del repo.
+const BUNDLED_DOCS = path.join(__dirname, 'documentos');
+const DOCS_DIR = process.env.DOCS_DIR || BUNDLED_DOCS;
+const DOCS_EXT = /\.(md|txt|pdf|docx)$/i;
+const DOCS_MAX_BYTES = 50 * 1024 * 1024;
+try {
+  fs.mkdirSync(DOCS_DIR, { recursive: true });
+  if (path.resolve(DOCS_DIR) !== path.resolve(BUNDLED_DOCS) && !fs.readdirSync(DOCS_DIR).some(f => DOCS_EXT.test(f)) && fs.existsSync(BUNDLED_DOCS)) {
+    for (const f of fs.readdirSync(BUNDLED_DOCS)) if (DOCS_EXT.test(f)) fs.copyFileSync(path.join(BUNDLED_DOCS, f), path.join(DOCS_DIR, f));
+    console.log('Documentos iniciales copiados a ' + DOCS_DIR);
+  }
+} catch (e) { console.log('No se pudo preparar la carpeta de documentos: ' + e.message); }
 const documentos = require('./documentos');
-const DOCS = documentos.buildIndex(DOCS_DIR);
-const DOCS_TOOL = {
-  functionDeclarations: [{
-    name: 'consultar_documentos',
-    description: 'Busca en los documentos del cliente (contratos, expedientes, sentencias, informes, catálogos) y devuelve los fragmentos más relevantes. Úsala siempre que te pregunten por el contenido de un documento, un expediente, un contrato, una cláusula, una fecha o una cifra que pueda estar en ellos. Documentos disponibles: ' + (DOCS.docs.map(d => d.name).join('; ') || 'ninguno') + '.',
-    parameters: {
-      type: 'OBJECT',
-      properties: { pregunta: { type: 'STRING', description: 'Lo que quieres encontrar, con las palabras clave concretas (nombres, conceptos, fechas).' } },
-      required: ['pregunta'],
-    },
-  }],
-};
-const DOCS_RULES = DOCS.docs.length ? `
+let DOCS = documentos.buildIndex(DOCS_DIR);
+function reindexDocs() { DOCS = documentos.buildIndex(DOCS_DIR); return DOCS; }
+function docsTool() {
+  return {
+    functionDeclarations: [{
+      name: 'consultar_documentos',
+      description: 'Busca en los documentos del cliente (contratos, expedientes, sentencias, informes, catálogos) y devuelve los fragmentos más relevantes. Úsala siempre que te pregunten por el contenido de un documento, un expediente, un contrato, una cláusula, una fecha o una cifra que pueda estar en ellos. Documentos disponibles: ' + (DOCS.docs.map(d => d.name).join('; ') || 'ninguno') + '.',
+      parameters: {
+        type: 'OBJECT',
+        properties: { pregunta: { type: 'STRING', description: 'Lo que quieres encontrar, con las palabras clave concretas (nombres, conceptos, fechas).' } },
+        required: ['pregunta'],
+      },
+    }],
+  };
+}
+function docsRules() {
+  return DOCS.docs.length ? `
 
 === DOCUMENTOS ===
 Tienes la función consultar_documentos. Documentos cargados: ${DOCS.docs.map(d => d.name).join('; ')}.
 Cuando te pregunten algo que pueda estar en esos documentos, llama a la función ANTES de responder y contesta solo con lo que devuelva, citando el documento. Si no devuelve nada útil, di que no lo has encontrado en los documentos. Nunca inventes cláusulas, cifras ni fechas.
 ` : '';
+}
+function safeDocName(raw) {
+  let n = ''; try { n = decodeURIComponent(raw); } catch (e) { return ''; }
+  n = path.basename(n).replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim();
+  if (!n || n.startsWith('.') || n.length > 150 || !DOCS_EXT.test(n)) return '';
+  return n;
+}
+function docsList() {
+  return DOCS.docs.map(d => { let st = {}; try { st = fs.statSync(path.join(DOCS_DIR, d.file)); } catch (e) {} return { nombre: d.name, fichero: d.file, fragmentos: d.chunks, bytes: st.size || 0, fecha: st.mtime || null }; });
+}
 
 const KNOWLEDGE_RULES = `
 
@@ -178,7 +203,7 @@ function startSession(client, params) {
         responseModalities: ['AUDIO'],
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } }, languageCode: 'es-ES' },
       },
-      systemInstruction: { parts: [{ text: PERSONA[modo] + DOCS_RULES + (KNOWLEDGE ? KNOWLEDGE_RULES + KNOWLEDGE : '') }] },
+      systemInstruction: { parts: [{ text: PERSONA[modo] + docsRules() + (KNOWLEDGE ? KNOWLEDGE_RULES + KNOWLEDGE : '') }] },
       realtimeInputConfig: { automaticActivityDetection: { disabled: false, endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH', silenceDurationMs: 500 } },
       inputAudioTranscription: {},
       outputAudioTranscription: {},
@@ -186,7 +211,7 @@ function startSession(client, params) {
   };
   setup.setup.tools = [];
   if (ENABLE_SEARCH) setup.setup.tools.push({ googleSearch: {} });
-  if (DOCS.docs.length) setup.setup.tools.push(DOCS_TOOL);
+  if (DOCS.docs.length) setup.setup.tools.push(docsTool());
   if (!setup.setup.tools.length) delete setup.setup.tools;
 
   gem = connectGemini(
@@ -242,6 +267,42 @@ const server = http.createServer((req, res) => {
     return res.end(INDEX);
   }
   if (req.method === 'GET' && req.url === '/salud') return send(res, 200, { ok: true, clave: !!GEMINI_KEY, modelo: LIVE_MODEL, voz: LIVE_VOICE, busqueda: ENABLE_SEARCH, nombre: AGENT_NAME, conocimiento_chars: KNOWLEDGE.length, documentos: DOCS.docs.map(d => ({ nombre: d.name, fragmentos: d.chunks })) });
+
+  // ---- Gestión de documentos (misma protección que la sesión: el PIN) ----
+  const u = new URL(req.url, 'http://x');
+  if (u.pathname === '/documentos' || u.pathname.startsWith('/documentos/')) {
+    const pinGiven = u.searchParams.get('pin') || req.headers['x-pin'] || '';
+    if (ACCESS_PIN && pinGiven !== ACCESS_PIN) return send(res, 401, { error: 'PIN incorrecto' });
+    if (req.method === 'GET' && u.pathname === '/documentos') return send(res, 200, { documentos: docsList() });
+    const name = u.pathname.length > '/documentos/'.length ? safeDocName(u.pathname.slice('/documentos/'.length)) : '';
+    if (req.method === 'PUT' && u.pathname.startsWith('/documentos/')) {
+      if (!name) return send(res, 400, { error: 'Nombre no válido. Formatos: md, txt, pdf, docx.' });
+      const len = Number(req.headers['content-length'] || 0);
+      if (len > DOCS_MAX_BYTES) return send(res, 413, { error: 'Demasiado grande (máximo 50 MB).' });
+      const parts = []; let size = 0; let aborted = false;
+      req.on('data', c => { size += c.length; if (size > DOCS_MAX_BYTES) { aborted = true; req.destroy(); } else parts.push(c); });
+      req.on('end', () => {
+        if (aborted) return;
+        try {
+          fs.writeFileSync(path.join(DOCS_DIR, name), Buffer.concat(parts));
+          reindexDocs();
+          const d = DOCS.docs.find(x => x.file === name);
+          if (!d) { fs.unlinkSync(path.join(DOCS_DIR, name)); reindexDocs(); return send(res, 422, { error: 'No se pudo extraer texto del fichero (¿PDF escaneado sin texto?).' }); }
+          console.log('Documento subido: ' + name + ' (' + d.chunks + ' fragmentos)');
+          send(res, 200, { ok: true, documento: { nombre: d.name, fichero: d.file, fragmentos: d.chunks }, documentos: docsList() });
+        } catch (e) { send(res, 500, { error: 'No se pudo guardar: ' + e.message }); }
+      });
+      req.on('error', () => {});
+      return;
+    }
+    if (req.method === 'DELETE' && u.pathname.startsWith('/documentos/')) {
+      if (!name) return send(res, 400, { error: 'Nombre no válido' });
+      try { fs.unlinkSync(path.join(DOCS_DIR, name)); } catch (e) { return send(res, 404, { error: 'No existe' }); }
+      reindexDocs(); console.log('Documento borrado: ' + name);
+      return send(res, 200, { ok: true, documentos: docsList() });
+    }
+    return send(res, 405, { error: 'Método no permitido' });
+  }
   send(res, 404, { error: 'No encontrado' });
 });
 
