@@ -1,21 +1,22 @@
 # Matilde Sync (Windows)
 
-Vigila una carpeta del PC y sube a Copiloto Live cualquier documento nuevo o modificado (pdf, docx, md, txt). No hace falta abrir la web ni pedírselo a nadie: se deja el fichero en la carpeta y en unos segundos el copiloto ya lo puede consultar (si es un escaneo, el servidor le pasa OCR y tarda ~1 s por página).
+Vigila la carpeta `Matilde` del PC y sube a Copiloto Live cualquier documento nuevo o modificado (pdf, docx, md, txt). Se deja el fichero en la carpeta y en unos segundos el copiloto ya lo puede consultar (si es un escaneo, el servidor le pasa OCR, ~8 s por página).
+
+## Estructura
+
+- `Matilde\` → solo los ficheros del usuario.
+- `Matilde\no tocar\` → el programa (`matilde-sync.ps1`), el lanzador (`ARRANCAR MATILDE SYNC.bat`), la configuración (`matilde-sync.json`), el registro (`matilde-sync.log`) y el estado.
 
 ## Instalación
 
-1. Copiar `matilde-sync.ps1`, `matilde-sync.bat` y `matilde-sync.ejemplo.json` a una carpeta del PC (por ejemplo `Escritorio\Matilde`).
-2. Renombrar `matilde-sync.ejemplo.json` a `matilde-sync.json` y poner la `url` del cliente, su `pin` y la `carpeta` a vigilar.
-3. Doble clic en `matilde-sync.bat`. La ventana muestra lo que va subiendo; se cierra con Ctrl+C o cerrando la ventana.
-
-## Arranque automático con Windows
-
-Win+R → `shell:startup` → Enter → crear ahí un acceso directo a `matilde-sync.bat`. A partir de entonces arranca solo al iniciar sesión.
+1. Crear `Escritorio\Matilde\no tocar` y copiar dentro `matilde-sync.ps1`, `ARRANCAR MATILDE SYNC.bat` y `matilde-sync.ejemplo.json` renombrado a `matilde-sync.json` con la `url` y el `pin` del cliente.
+2. Doble clic en `ARRANCAR MATILDE SYNC.bat`. Se abre una ventana que vigila la carpeta; el lanzador se copia solo al Inicio de Windows, así que a partir del siguiente encendido arranca sin hacer nada.
 
 ## Detalles
 
+- Al arrancar (y cada 5 minutos) ordena la carpeta: mueve sus propios ficheros a `no tocar`, elimina restos (textos OCR, antigua subcarpeta `subir`) y deja en la raíz solo lo del usuario.
 - Guarda en `matilde-sync.estado.json` lo que ya subió; solo vuelve a subir un fichero si cambia.
 - Espera a que un fichero deje de crecer antes de subirlo (descargas y copias en curso).
-- Si un fichero falla (p. ej. PDF ilegible), lo apunta en `matilde-sync.log` y no lo reintenta hasta que cambie.
+- Si un fichero falla, lo apunta en `matilde-sync.log` y no lo reintenta hasta que cambie.
 - `borrarRemoto: true` hace que, al quitar un fichero de la carpeta, también se borre en Copiloto Live. Por defecto está desactivado.
 - Las subcarpetas no se vigilan.
