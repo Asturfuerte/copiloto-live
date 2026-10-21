@@ -83,8 +83,15 @@ input[type=password] { width: 100%; }
 
   <section class="panel" id="pinBox" hidden>
     <h2>Acceso</h2>
-    <input type="password" id="pin" placeholder="PIN de acceso" autocomplete="current-password">
-    <button class="small" id="pinOk">Entrar</button>
+    <button class="big" id="bioBtn" hidden>🔓 Desbloquear con Face ID / huella</button>
+    <input type="password" id="pin" placeholder="PIN de acceso" autocomplete="current-password" inputmode="numeric">
+    <button class="small" id="pinOk">Entrar con PIN</button>
+    <p class="err" id="authErr" hidden></p>
+  </section>
+  <section class="panel" id="bioSetup" hidden>
+    <h2>Face ID / huella</h2>
+    <p class="hint" id="bioSetupText">Activa el desbloqueo con la cara o la huella en este dispositivo y no tendrás que escribir el PIN.</p>
+    <div class="row"><button class="small" id="bioSetupBtn">Activar en este dispositivo</button><button class="small" id="bioSetupNo">Ahora no</button></div>
   </section>
 
   <section class="panel">
@@ -123,7 +130,14 @@ input[type=password] { width: 100%; }
 <script>
 (function () {
   const $ = id => document.getElementById(id);
-  let pin = ''; try { pin = localStorage.getItem('copiloto_pin') || ''; } catch (e) {}
+  // ---- Acceso: PIN (se recuerda) o token de sesión tras Face ID / huella (se pide cada vez que se abre la app) ----
+  let pin = '', token = '';
+  try { pin = localStorage.getItem('copiloto_pin') || ''; token = sessionStorage.getItem('copiloto_token') || ''; } catch (e) {}
+  const bioRegistered = () => { try { return localStorage.getItem('copiloto_passkey') === '1'; } catch (e) { return false; } };
+  function authQS() { return token ? 'token=' + encodeURIComponent(token) : 'pin=' + encodeURIComponent(pin); }
+  const hasWebAuthn = !!(window.PublicKeyCredential && navigator.credentials && navigator.credentials.get);
+  const b64u = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const fromB64u = s => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
 
   let ws = null, actx = null, micStream = null, proc = null, srcNode = null, running = false;
   let playAt = 0; const scheduled = [];
@@ -169,7 +183,7 @@ input[type=password] { width: 100%; }
     catch (e) { showErr('Sin permiso de micrófono. En iPhone: Ajustes > Safari > Micrófono > Permitir.'); return; }
 
     const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
-    ws = new WebSocket(proto + location.host + '/ws?pin=' + encodeURIComponent(pin) + '&modo=' + modo() + '&voz=' + encodeURIComponent($('voz').value));
+    ws = new WebSocket(proto + location.host + '/ws?' + authQS() + '&modo=' + modo() + '&voz=' + encodeURIComponent($('voz').value));
     ws.binaryType = 'arraybuffer';
     status('busy', 'Conectando');
     ws.onopen = () => {
@@ -196,7 +210,7 @@ input[type=password] { width: 100%; }
       else if (m.tipo === 'aviso') { if (/^Consultando documentos/.test(m.texto)) line('sys').textContent = '📄 ' + m.texto; else showErr(m.texto); }
       else if (m.tipo === 'cerrado') { showErr(m.motivo || 'Sesión cerrada'); if (running) { stopAudio(); setTimeout(() => { if (running) start(); }, 800); } }
     };
-    ws.onerror = () => showErr('No se pudo conectar. Comprueba el PIN.');
+    ws.onerror = () => showErr('No se pudo conectar. Vuelve a desbloquear la app.');
     ws.onclose = () => { if (running) { stopAudio(); status('busy', 'Reconectando'); setTimeout(() => { if (running) start(); }, 1000); } };
   }
   function stopAudio() {
@@ -216,11 +230,61 @@ input[type=password] { width: 100%; }
     else { $('go').textContent = 'Parar'; $('go').classList.add('on'); start(); }
   });
 
-  // ---- PIN ----
-  function pinOk() { if ($('pinBox').hidden || pin) return true; $('pinBox').hidden = false; $('pin').focus(); return false; }
+  // ---- PIN / Face ID ----
+  function unlocked() { return !!(token || pin); }
+  function pinOk() { if (unlocked()) return true; showLock(); return false; }
+  function showLock() { $('pinBox').hidden = false; $('bioBtn').hidden = !(hasWebAuthn && bioRegistered()); if ($('bioBtn').hidden) $('pin').focus(); }
+  function authError(t) { $('authErr').textContent = t; $('authErr').hidden = !t; }
+  function onUnlocked() { $('pinBox').hidden = true; authError(''); showErr(''); loadDocs(); if (pin && hasWebAuthn && !bioRegistered() && !sessionStorage.getItem('bio_no')) $('bioSetup').hidden = false; }
   $('pin').addEventListener('keydown', e => { if (e.key === 'Enter') $('pinOk').click(); });
-  $('pinOk').addEventListener('click', () => { pin = $('pin').value.trim(); try { localStorage.setItem('copiloto_pin', pin); } catch (e) {} $('pinBox').hidden = true; showErr(''); });
-  if (!pin) $('pinBox').hidden = false;
+  $('pinOk').addEventListener('click', async () => {
+    const p = $('pin').value.trim(); if (!p) return;
+    const r = await fetch('/auth/estado?pin=' + encodeURIComponent(p)).then(x => x.json()).catch(() => null);
+    if (!r || !r.sesion) { authError('PIN incorrecto'); return; }
+    pin = p; token = '';
+    try { if (bioRegistered()) localStorage.removeItem('copiloto_pin'); else localStorage.setItem('copiloto_pin', pin); } catch (e) {}
+    onUnlocked();
+  });
+  // Desbloqueo con passkey (Face ID / Touch ID / huella)
+  async function bioUnlock() {
+    authError('');
+    try {
+      const opt = await fetch('/auth/opciones-login', { method: 'POST' }).then(x => x.json());
+      opt.challenge = fromB64u(opt.challenge); opt.allowCredentials = (opt.allowCredentials || []).map(c => ({ type: 'public-key', id: fromB64u(c.id) }));
+      const cred = await navigator.credentials.get({ publicKey: opt });
+      const body = { id: cred.id, clientDataJSON: b64u(cred.response.clientDataJSON), authenticatorData: b64u(cred.response.authenticatorData), signature: b64u(cred.response.signature) };
+      const r = await fetch('/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then(x => x.json());
+      if (!r.ok) throw new Error(r.error || 'no autorizado');
+      token = r.token; try { sessionStorage.setItem('copiloto_token', token); } catch (e) {}
+      onUnlocked();
+    } catch (e) { authError('No se pudo desbloquear (' + (e.message || e.name) + '). Usa el PIN.'); $('pin').focus(); }
+  }
+  $('bioBtn').addEventListener('click', bioUnlock);
+  // Alta de este dispositivo (requiere PIN)
+  async function bioSetup() {
+    try {
+      const opt = await fetch('/auth/opciones-registro?' + authQS(), { method: 'POST' }).then(x => x.json());
+      if (opt.error) throw new Error(opt.error);
+      opt.challenge = fromB64u(opt.challenge); opt.user.id = fromB64u(opt.user.id); opt.excludeCredentials = (opt.excludeCredentials || []).map(c => ({ type: 'public-key', id: fromB64u(c.id) }));
+      const cred = await navigator.credentials.create({ publicKey: opt });
+      const nombre = /iPhone|iPad/.test(navigator.userAgent) ? 'iPhone' : /Android/.test(navigator.userAgent) ? 'Android' : /Mac/.test(navigator.userAgent) ? 'Mac' : 'Windows';
+      const body = { id: cred.id, clientDataJSON: b64u(cred.response.clientDataJSON), attestationObject: b64u(cred.response.attestationObject), nombre };
+      const r = await fetch('/auth/registro?' + authQS(), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then(x => x.json());
+      if (!r.ok) throw new Error(r.error || 'error');
+      try { localStorage.setItem('copiloto_passkey', '1'); localStorage.removeItem('copiloto_pin'); } catch (e) {}
+      token = r.token; try { sessionStorage.setItem('copiloto_token', token); } catch (e) {}
+      $('bioSetup').hidden = true; $('upStatus').textContent = 'Face ID / huella activado: la próxima vez la app se desbloquea con la cara.';
+    } catch (e) { $('bioSetupText').textContent = 'No se pudo activar: ' + (e.message || e.name) + '. En iPhone hace falta iOS 16 o superior y abrir la web en Safari o desde el icono de la pantalla de inicio.'; }
+  }
+  $('bioSetupBtn').addEventListener('click', bioSetup);
+  $('bioSetupNo').addEventListener('click', () => { $('bioSetup').hidden = true; try { sessionStorage.setItem('bio_no', '1'); } catch (e) {} });
+  // Arranque: si hay token de sesión válido, entra; si hay passkey, pide Face ID; si no, PIN
+  (async () => {
+    if (token) { const r = await fetch('/auth/estado?token=' + encodeURIComponent(token)).then(x => x.json()).catch(() => null); if (r && r.sesion) { onUnlocked(); return; } token = ''; try { sessionStorage.removeItem('copiloto_token'); } catch (e) {} }
+    if (pin && !bioRegistered()) { onUnlocked(); return; }
+    showLock();
+    if (!$('bioBtn').hidden) bioUnlock();
+  })();
   fetch('/salud').then(r => r.json()).then(j => { if (!j.clave) showErr('El servidor no tiene la clave de Gemini.'); else $('info').textContent = 'Modelo ' + j.modelo; }).catch(() => {});
 
   // ---- Documentos ----
@@ -242,7 +306,7 @@ input[type=password] { width: 100%; }
       const del = document.createElement('button'); del.className = 'del'; del.textContent = 'Borrar'; del.title = 'Borrar ' + d.fichero;
       del.addEventListener('click', async () => {
         if (!confirm('¿Borrar "' + d.fichero + '"?')) return;
-        const r = await fetch('/documentos/' + encodeURIComponent(d.fichero) + '?pin=' + encodeURIComponent(pin), { method: 'DELETE' });
+        const r = await fetch('/documentos/' + encodeURIComponent(d.fichero) + '?' + authQS(), { method: 'DELETE' });
         const j = await r.json().catch(() => ({}));
         if (!r.ok) { showErr(j.error || 'No se pudo borrar'); return; }
         renderDocs(j.documentos || []);
@@ -251,8 +315,8 @@ input[type=password] { width: 100%; }
     }
   }
   async function loadDocs() {
-    if (!pin && !$('pinBox').hidden) return;
-    try { const r = await fetch('/documentos?pin=' + encodeURIComponent(pin)); if (r.status === 401) { $('pinBox').hidden = false; return; } const j = await r.json(); renderDocs(j.documentos || []); } catch (e) {}
+    if (!unlocked()) return;
+    try { const r = await fetch('/documentos?' + authQS()); if (r.status === 401) { token = ''; pin = ''; showLock(); return; } const j = await r.json(); renderDocs(j.documentos || []); } catch (e) {}
   }
   $('upFile').addEventListener('change', async () => {
     const files = [...$('upFile').files]; if (!files.length) return;
@@ -262,7 +326,7 @@ input[type=password] { width: 100%; }
     for (const f of files) {
       $('upStatus').textContent = 'Subiendo ' + f.name + ' (' + (n + 1) + '/' + files.length + ')…';
       try {
-        const r = await fetch('/documentos/' + encodeURIComponent(f.name) + '?pin=' + encodeURIComponent(pin), { method: 'PUT', body: f, headers: { 'content-type': 'application/octet-stream' } });
+        const r = await fetch('/documentos/' + encodeURIComponent(f.name) + '?' + authQS(), { method: 'PUT', body: f, headers: { 'content-type': 'application/octet-stream' } });
         const j = await r.json().catch(() => ({}));
         if (!r.ok) { showErr(f.name + ': ' + (j.error || 'error ' + r.status)); continue; }
         n++; renderDocs(j.documentos || []);
@@ -272,8 +336,7 @@ input[type=password] { width: 100%; }
     $('upStatus').textContent = n ? (enOcr ? 'Subido. Los escaneos se están leyendo con OCR (unos 10 s por página); mientras, puedes cerrar la página.' : n + ' documento' + (n > 1 ? 's' : '') + ' listo' + (n > 1 ? 's' : '') + ' para consultar.') : '';
     $('upLabel').classList.remove('busy'); $('upFile').value = '';
   });
-  $('pinOk').addEventListener('click', loadDocs);
-  loadDocs();
+
 })();
 </script>
 </body>

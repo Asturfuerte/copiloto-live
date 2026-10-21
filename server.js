@@ -297,6 +297,20 @@ function startSession(client, params) {
 // ---------- HTTP ----------
 function send(res, code, obj) { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(obj)); }
 
+// ---- Acceso: PIN o token de sesión (emitido tras desbloquear con passkey / Face ID) ----
+const { Passkeys } = require('./passkeys');
+const PASSKEYS_FILE = process.env.PASSKEYS_FILE || (path.resolve(DOCS_DIR) !== path.resolve(BUNDLED_DOCS) ? path.join(path.dirname(DOCS_DIR), 'passkeys.json') : path.join(__dirname, 'passkeys.json'));
+const passkeys = new Passkeys(PASSKEYS_FILE);
+function authorized(u, req) {
+  if (!ACCESS_PIN) return true;
+  const pin = u.searchParams.get('pin') || req.headers['x-pin'] || '';
+  if (pin && pin === ACCESS_PIN) return true;
+  const token = u.searchParams.get('token') || req.headers['x-token'] || '';
+  return passkeys.validSession(token);
+}
+function rpInfo(req) { const host = (req.headers['x-forwarded-host'] || req.headers.host || '').split(':')[0]; const proto = req.headers['x-forwarded-proto'] || 'https'; return { rpId: host, origin: proto + '://' + (req.headers['x-forwarded-host'] || req.headers.host) }; }
+function readJson(req, cb) { const parts = []; let n = 0; req.on('data', c => { n += c.length; if (n < 1e6) parts.push(c); }); req.on('end', () => { try { cb(null, JSON.parse(Buffer.concat(parts).toString('utf8') || '{}')); } catch (e) { cb(e); } }); }
+
 const server = http.createServer((req, res) => {
   if (req.method === 'GET' && (req.url === '/' || req.url.startsWith('/?'))) {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store, no-cache, must-revalidate', 'pragma': 'no-cache' });
@@ -321,11 +335,29 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === 'GET' && req.url === '/salud') return send(res, 200, { ok: true, clave: !!GEMINI_KEY, modelo: LIVE_MODEL, voz: LIVE_VOICE, busqueda: ENABLE_SEARCH, nombre: AGENT_NAME, conocimiento_chars: KNOWLEDGE.length, busqueda_semantica: !!DOCS.embedded, documentos: DOCS.docs.map(d => ({ nombre: d.name, fragmentos: d.chunks })) });
 
-  // ---- Gestión de documentos (misma protección que la sesión: el PIN) ----
   const u = new URL(req.url, 'http://x');
+
+  // ---- Passkeys (Face ID / huella) ----
+  if (u.pathname.startsWith('/auth/')) {
+    const { rpId, origin } = rpInfo(req);
+    if (req.method === 'GET' && u.pathname === '/auth/estado') return send(res, 200, { pin: !!ACCESS_PIN, passkeys: passkeys.count(), sesion: authorized(u, req) });
+    if (req.method === 'POST' && u.pathname === '/auth/opciones-registro') { if (!authorized(u, req)) return send(res, 401, { error: 'PIN incorrecto' }); return send(res, 200, passkeys.registrationOptions(rpId, AGENT_NAME)); }
+    if (req.method === 'POST' && u.pathname === '/auth/registro') {
+      if (!authorized(u, req)) return send(res, 401, { error: 'PIN incorrecto' });
+      return readJson(req, (e, body) => { if (e) return send(res, 400, { error: 'JSON' }); try { const id = passkeys.register(rpId, origin, body, body.nombre); console.log('Passkey registrada: ' + (body.nombre || id)); send(res, 200, { ok: true, id, token: passkeys.newSession(body.nombre) }); } catch (err) { send(res, 400, { error: err.message }); } });
+    }
+    if (req.method === 'POST' && u.pathname === '/auth/opciones-login') return send(res, 200, passkeys.loginOptions(rpId));
+    if (req.method === 'POST' && u.pathname === '/auth/login') {
+      return readJson(req, (e, body) => { if (e) return send(res, 400, { error: 'JSON' }); try { const token = passkeys.login(rpId, origin, body); send(res, 200, { ok: true, token }); } catch (err) { console.log('Passkey login fallido: ' + err.message); send(res, 401, { error: err.message }); } });
+    }
+    if (req.method === 'GET' && u.pathname === '/auth/dispositivos') { if (!authorized(u, req)) return send(res, 401, { error: 'PIN incorrecto' }); return send(res, 200, { dispositivos: passkeys.list() }); }
+    if (req.method === 'DELETE' && u.pathname.startsWith('/auth/dispositivos/')) { if (!authorized(u, req)) return send(res, 401, { error: 'PIN incorrecto' }); passkeys.remove(decodeURIComponent(u.pathname.slice('/auth/dispositivos/'.length))); return send(res, 200, { ok: true, dispositivos: passkeys.list() }); }
+    return send(res, 404, { error: 'No encontrado' });
+  }
+
+  // ---- Gestión de documentos (misma protección que la sesión: PIN o token) ----
   if (u.pathname === '/documentos' || u.pathname.startsWith('/documentos/')) {
-    const pinGiven = u.searchParams.get('pin') || req.headers['x-pin'] || '';
-    if (ACCESS_PIN && pinGiven !== ACCESS_PIN) return send(res, 401, { error: 'PIN incorrecto' });
+    if (!authorized(u, req)) return send(res, 401, { error: 'PIN incorrecto' });
     if (req.method === 'GET' && u.pathname === '/documentos') return send(res, 200, { documentos: docsList() });
     if (req.method === 'GET' && u.pathname === '/documentos/buscar') { // prueba de búsqueda: ?q=...
       const q = u.searchParams.get('q') || '';
@@ -376,7 +408,7 @@ const server = http.createServer((req, res) => {
 server.on('upgrade', (req, sock) => {
   const u = new URL(req.url, 'http://x');
   if (u.pathname !== '/ws') { sock.destroy(); return; }
-  if (ACCESS_PIN && u.searchParams.get('pin') !== ACCESS_PIN) { sock.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); sock.destroy(); return; }
+  if (!authorized(u, req)) { sock.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); sock.destroy(); return; }
   if (!GEMINI_KEY) { sock.write('HTTP/1.1 500 Internal Server Error\r\n\r\n'); sock.destroy(); return; }
   const key = req.headers['sec-websocket-key'];
   sock.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${acceptKey(key)}\r\n\r\n`);
