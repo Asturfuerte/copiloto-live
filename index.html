@@ -282,7 +282,7 @@ input[type=password] { width: 100%; }
       else if (m.tipo === 'interrumpido') { stopPlayback(); status('on', 'Escuchando'); }
       else if (m.tipo === 'fin_turno') { endTurn(); setTimeout(() => { if (running && !scheduled.length) status('on', 'Escuchando'); }, 300); }
       else if (m.tipo === 'agenda') { loadAgenda(); line('sys').textContent = (m.accion === 'nuevo' ? '📅 Apuntado: ' : m.accion === 'hecho' ? '✅ Hecho: ' : '✏️ Cambiado: ') + m.item.texto + (m.item.fecha ? ' (' + m.item.fecha + (m.item.hora ? ' ' + m.item.hora : '') + ')' : ''); }
-      else if (m.tipo === 'aviso') { if (/^Consultando documentos/.test(m.texto)) line('sys').textContent = '📄 ' + m.texto; else showErr(m.texto); }
+      else if (m.tipo === 'aviso') { if (/^Consultando documentos/.test(m.texto)) line('sys').textContent = '📄 ' + m.texto; else if (/^Consultando tienda/.test(m.texto)) line('sys').textContent = '🛒 ' + m.texto; else showErr(m.texto); }
       else if (m.tipo === 'cerrado') { showErr(m.motivo || 'Sesión cerrada'); if (running) { stopAudio(); scheduleReconnect(800); } }
     };
     ws.onerror = () => showErr('No se pudo conectar. Vuelve a desbloquear la app.');

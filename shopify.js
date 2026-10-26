@@ -1,0 +1,94 @@
+// Consultas a la tienda Shopify (API Admin) para las funciones de voz de Matilde.
+// Necesita dos variables de entorno:
+//   SHOPIFY_SHOP  -> dominio técnico de la tienda (xxxx.myshopify.com)
+//   SHOPIFY_TOKEN -> token de acceso de la app personalizada (shpat_...)
+// Si faltan, las funciones de tienda no se registran y todo lo demás sigue igual.
+const SHOP = process.env.SHOPIFY_SHOP || '';
+const TOKEN = process.env.SHOPIFY_TOKEN || '';
+const API = '2025-07';
+
+function enabled() { return !!(SHOP && TOKEN); }
+
+async function api(ruta) {
+  const r = await fetch('https://' + SHOP + '/admin/api/' + API + ruta, { headers: { 'X-Shopify-Access-Token': TOKEN } });
+  if (r.status === 401 || r.status === 403) throw new Error('Shopify rechazó el token (revisa SHOPIFY_TOKEN y los permisos de la app)');
+  if (!r.ok) throw new Error('Shopify respondió ' + r.status);
+  return r.json();
+}
+
+const eur = x => (Math.round(Number(x || 0) * 100) / 100).toLocaleString('es-ES', { minimumFractionDigits: 2 }) + ' €';
+const PAGO = { paid: 'pagado', pending: 'pendiente de pago', partially_paid: 'pago parcial', refunded: 'reembolsado', partially_refunded: 'reembolso parcial', voided: 'anulado', authorized: 'autorizado' };
+const ENVIO = { fulfilled: 'enviado', partial: 'envío parcial', restocked: 'devuelto a stock' };
+const estadoPago = o => PAGO[o.financial_status] || o.financial_status || '';
+const estadoEnvio = o => ENVIO[o.fulfillment_status] || (o.fulfillment_status ? o.fulfillment_status : 'sin enviar');
+
+// Ventas entre dos fechas (AAAA-MM-DD, incluidas). Devuelve texto para la voz.
+async function ventas(desde, hasta) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(desde || '')) throw new Error('Falta la fecha "desde" (AAAA-MM-DD)');
+  const h = /^\d{4}-\d{2}-\d{2}$/.test(hasta || '') ? hasta : desde;
+  const j = await api('/orders.json?status=any&limit=250&created_at_min=' + desde + 'T00:00:00Z&created_at_max=' + h + 'T23:59:59Z&fields=name,total_price,created_at,financial_status,fulfillment_status,cancelled_at');
+  const todos = j.orders || [];
+  const pedidos = todos.filter(o => !o.cancelled_at);
+  const cancelados = todos.length - pedidos.length;
+  if (!pedidos.length) return 'Ningún pedido entre ' + desde + ' y ' + h + (cancelados ? ' (' + cancelados + ' cancelado' + (cancelados > 1 ? 's' : '') + ')' : '') + '.';
+  const total = pedidos.reduce((a, o) => a + Number(o.total_price || 0), 0);
+  const sinEnviar = pedidos.filter(o => !o.fulfillment_status).length;
+  let s = pedidos.length + ' pedido' + (pedidos.length > 1 ? 's' : '') + ' por ' + eur(total) + (desde === h ? ' el ' + desde : ' entre ' + desde + ' y ' + h) + '.';
+  if (sinEnviar) s += ' ' + sinEnviar + ' sin enviar todavía.';
+  if (cancelados) s += ' ' + cancelados + ' cancelado' + (cancelados > 1 ? 's' : '') + ' aparte.';
+  s += '\nÚltimos: ' + pedidos.slice(0, 8).map(o => o.name + ' (' + eur(o.total_price) + ', ' + estadoPago(o) + ', ' + estadoEnvio(o) + ')').join('; ');
+  if (todos.length === 250) s += '\n(Hay más de 250; el total es parcial.)';
+  return s;
+}
+
+// Busca productos por nombre y devuelve precio y stock por variante.
+async function producto(nombre) {
+  const q = String(nombre || '').trim().toLowerCase();
+  if (!q) throw new Error('Falta el nombre del producto');
+  const j = await api('/products.json?limit=250&fields=title,status,variants');
+  const norm = s => String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const hits = (j.products || []).filter(p => norm(p.title).includes(norm(q)));
+  if (!hits.length) return 'No encuentro ningún producto que se llame "' + nombre + '" en la tienda.';
+  return hits.slice(0, 5).map(p => {
+    const vs = (p.variants || []).map(v => (v.title && v.title !== 'Default Title' ? v.title + ': ' : '') + eur(v.price) + (v.inventory_quantity == null ? '' : ', stock ' + v.inventory_quantity)).join(' · ');
+    return p.title + (p.status !== 'active' ? ' [' + p.status + ']' : '') + ' — ' + vs;
+  }).join('\n') + (hits.length > 5 ? '\n(y ' + (hits.length - 5) + ' más)' : '');
+}
+
+// Estado de un pedido por su número ("1042" o "#1042").
+async function pedido(numero) {
+  const n = String(numero || '').replace(/[#º\s]/g, '');
+  if (!n) throw new Error('Falta el número de pedido');
+  const j = await api('/orders.json?status=any&name=%23' + encodeURIComponent(n) + '&fields=name,created_at,total_price,financial_status,fulfillment_status,cancelled_at,fulfillments');
+  const o = (j.orders || [])[0];
+  if (!o) return 'No encuentro el pedido ' + numero + ' en la tienda.';
+  let s = 'Pedido ' + o.name + ' (' + String(o.created_at).slice(0, 10) + '): ' + eur(o.total_price) + ', ' + estadoPago(o) + ', ' + (o.cancelled_at ? 'CANCELADO' : estadoEnvio(o)) + '.';
+  const f = (o.fulfillments || []).filter(x => x.tracking_number);
+  if (f.length) s += ' Seguimiento: ' + f.map(x => (x.tracking_company ? x.tracking_company + ' ' : '') + x.tracking_number).join('; ') + '.';
+  return s;
+}
+
+const TOOL = {
+  functionDeclarations: [
+    { name: 'ventas_tienda', description: 'Ventas de la tienda online entre dos fechas: número de pedidos, importe total y últimos pedidos con su estado. Úsala cuando pregunten cuánto se ha vendido, cuántos pedidos hay hoy/esta semana/este mes, o cómo va la tienda. Calcula las fechas con la fecha de hoy de tus instrucciones.',
+      parameters: { type: 'OBJECT', properties: { desde: { type: 'STRING', description: 'AAAA-MM-DD' }, hasta: { type: 'STRING', description: 'AAAA-MM-DD (opcional; sin él, solo el día "desde")' } }, required: ['desde'] } },
+    { name: 'buscar_producto', description: 'Busca un producto de la tienda por nombre y devuelve su precio y el stock de cada variante (talla, color). Úsala cuando pregunten por el precio o el stock de un producto.',
+      parameters: { type: 'OBJECT', properties: { nombre: { type: 'STRING', description: 'Nombre o parte del nombre del producto.' } }, required: ['nombre'] } },
+    { name: 'pedido_tienda', description: 'Estado de un pedido concreto de la tienda por su número: pago, envío y seguimiento. Para el aviso del almacén usa estado_pedidos; esta da la vista de la tienda (Shopify).',
+      parameters: { type: 'OBJECT', properties: { numero: { type: 'STRING', description: 'Número del pedido, p. ej. "1042".' } }, required: ['numero'] } },
+  ],
+};
+const RULES = `
+
+=== TIENDA ONLINE (Shopify) ===
+Tienes acceso directo a la tienda con ventas_tienda (ventas y pedidos entre fechas), buscar_producto (precio y stock) y pedido_tienda (estado de un pedido en la tienda). Para "¿cómo van los pedidos?" en general usa estado_pedidos (avisos del almacén); para cifras de ventas, stock o un pedido concreto usa estas. Llama a la función antes de responder y di las cifras en lenguaje natural, sin inventar nada.`;
+
+async function llamar(nombre, args) {
+  const a = args || {};
+  if (nombre === 'ventas_tienda') return ventas(a.desde, a.hasta);
+  if (nombre === 'buscar_producto') return producto(a.nombre);
+  if (nombre === 'pedido_tienda') return pedido(a.numero);
+  throw new Error('Función desconocida');
+}
+
+module.exports = { enabled, llamar, TOOL, RULES };

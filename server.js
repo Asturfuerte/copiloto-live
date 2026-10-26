@@ -251,7 +251,7 @@ function startSession(client, params) {
         responseModalities: ['AUDIO'],
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } }, languageCode: 'es-ES' },
       },
-      systemInstruction: { parts: [{ text: PERSONA[modo] + AGENDA_RULES + agenda.resumenParaSesion() + PEDIDOS_RULES + docsRules() + (KNOWLEDGE ? KNOWLEDGE_RULES + KNOWLEDGE : '') }] },
+      systemInstruction: { parts: [{ text: PERSONA[modo] + AGENDA_RULES + agenda.resumenParaSesion() + PEDIDOS_RULES + (shopify.enabled() ? shopify.RULES : '') + docsRules() + (KNOWLEDGE ? KNOWLEDGE_RULES + KNOWLEDGE : '') }] },
       realtimeInputConfig: { automaticActivityDetection: { disabled: false, endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH', silenceDurationMs: 500 } },
       inputAudioTranscription: {},
       outputAudioTranscription: {},
@@ -262,6 +262,7 @@ function startSession(client, params) {
   if (DOCS.docs.length) setup.setup.tools.push(docsTool());
   setup.setup.tools.push(AGENDA_TOOL);
   setup.setup.tools.push(PEDIDOS_TOOL);
+  if (shopify.enabled()) setup.setup.tools.push(shopify.TOOL);
   if (!setup.setup.tools.length) delete setup.setup.tools;
 
   gem = connectGemini(
@@ -314,6 +315,13 @@ function startSession(client, params) {
             console.log(c.name + '(' + JSON.stringify(a) + ') -> ' + result.slice(0, 80));
             return { id: c.id, name: c.name, response: { result } };
           }
+          if (c.name === 'ventas_tienda' || c.name === 'buscar_producto' || c.name === 'pedido_tienda') {
+            sendText(client, { tipo: 'aviso', texto: 'Consultando tienda: ' + ({ ventas_tienda: 'ventas', buscar_producto: 'producto', pedido_tienda: 'pedido' })[c.name] });
+            let result;
+            try { result = await shopify.llamar(c.name, c.args); } catch (e) { result = 'No se pudo consultar la tienda: ' + e.message; }
+            console.log(c.name + '(' + JSON.stringify(c.args || {}) + ') -> ' + String(result).slice(0, 80));
+            return { id: c.id, name: c.name, response: { result } };
+          }
           if (c.name === 'estado_pedidos') {
             const result = pedidos.resumen(c.args && c.args.pedido);
             console.log('estado_pedidos("' + ((c.args && c.args.pedido) || '') + '") -> ' + result.length + ' chars');
@@ -357,6 +365,10 @@ try {
   if (!process.env.AGENDA_FILE && !fs.existsSync(AGENDA_FILE) && fs.existsSync(OLD_AGENDA)) fs.copyFileSync(OLD_AGENDA, AGENDA_FILE);
 } catch (e) {}
 const agenda = new Recordatorios(AGENDA_FILE);
+
+// ---------- Tienda Shopify (ventas, stock, pedidos) ----------
+const shopify = require('./shopify');
+if (shopify.enabled()) console.log('Tienda Shopify conectada: ' + process.env.SHOPIFY_SHOP);
 
 // ---------- Pedidos de la tienda (webhook de Coinnecta) ----------
 const { Pedidos } = require('./pedidos');
@@ -459,7 +471,7 @@ const server = http.createServer((req, res) => {
     const f = path.join(PUBLIC_DIR, req.url.slice(1));
     if (fs.existsSync(f)) { res.writeHead(200, { 'content-type': MIME[path.extname(f)] || 'application/octet-stream', 'cache-control': 'public, max-age=86400' }); return res.end(fs.readFileSync(f)); }
   }
-  if (req.method === 'GET' && req.url === '/salud') return send(res, 200, { ok: true, clave: !!GEMINI_KEY, modelo: LIVE_MODEL, voz: LIVE_VOICE, busqueda: ENABLE_SEARCH, nombre: AGENT_NAME, conocimiento_chars: KNOWLEDGE.length, busqueda_semantica: !!DOCS.embedded, agenda_pendientes: agenda.pendientes().length, documentos: DOCS.docs.map(d => ({ nombre: d.name, fragmentos: d.chunks })) });
+  if (req.method === 'GET' && req.url === '/salud') return send(res, 200, { ok: true, clave: !!GEMINI_KEY, modelo: LIVE_MODEL, voz: LIVE_VOICE, busqueda: ENABLE_SEARCH, nombre: AGENT_NAME, tienda: shopify.enabled(), conocimiento_chars: KNOWLEDGE.length, busqueda_semantica: !!DOCS.embedded, agenda_pendientes: agenda.pendientes().length, documentos: DOCS.docs.map(d => ({ nombre: d.name, fragmentos: d.chunks })) });
 
   const u = new URL(req.url, 'http://x');
 
