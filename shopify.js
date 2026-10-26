@@ -1,17 +1,45 @@
 // Consultas a la tienda Shopify (API Admin) para las funciones de voz de Matilde.
-// Necesita dos variables de entorno:
-//   SHOPIFY_SHOP  -> dominio técnico de la tienda (xxxx.myshopify.com)
-//   SHOPIFY_TOKEN -> token de acceso de la app personalizada (shpat_...)
+// Variables de entorno:
+//   SHOPIFY_SHOP          -> dominio técnico de la tienda (xxxx.myshopify.com)
+//   SHOPIFY_CLIENT_ID     -> ID de cliente de la app del Dev Dashboard
+//   SHOPIFY_CLIENT_SECRET -> Secreto de cliente de la app
+// (Las apps nuevas del Dev Dashboard no dan un token fijo: el token se pide con el
+//  ID/secreto y caduca cada 24 h, así que aquí se renueva solo. Si algún día hubiera
+//  un token fijo shpat_, se puede usar SHOPIFY_TOKEN en su lugar.)
 // Si faltan, las funciones de tienda no se registran y todo lo demás sigue igual.
 const SHOP = process.env.SHOPIFY_SHOP || '';
-const TOKEN = process.env.SHOPIFY_TOKEN || '';
+const TOKEN_FIJO = process.env.SHOPIFY_TOKEN || '';
+const CLIENT_ID = process.env.SHOPIFY_CLIENT_ID || '';
+const CLIENT_SECRET = process.env.SHOPIFY_CLIENT_SECRET || '';
 const API = '2025-07';
 
-function enabled() { return !!(SHOP && TOKEN); }
+function enabled() { return !!(SHOP && (TOKEN_FIJO || (CLIENT_ID && CLIENT_SECRET))); }
+
+// Token en caché; se renueva 5 minutos antes de caducar.
+let cache = { token: TOKEN_FIJO, exp: TOKEN_FIJO ? Infinity : 0 };
+async function getToken() {
+  if (cache.token && Date.now() < cache.exp - 5 * 60 * 1000) return cache.token;
+  const r = await fetch('https://' + SHOP + '/admin/oauth/access_token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ grant_type: 'client_credentials', client_id: CLIENT_ID, client_secret: CLIENT_SECRET }),
+  });
+  if (!r.ok) throw new Error('Shopify no dio token (' + r.status + '); revisa SHOPIFY_CLIENT_ID y SHOPIFY_CLIENT_SECRET');
+  const j = await r.json();
+  if (!j.access_token) throw new Error('Shopify no dio token; revisa las credenciales');
+  cache = { token: j.access_token, exp: Date.now() + (Number(j.expires_in) || 86400) * 1000 };
+  console.log('Token de Shopify renovado (caduca en ' + Math.round((Number(j.expires_in) || 86400) / 3600) + ' h)');
+  return cache.token;
+}
 
 async function api(ruta) {
-  const r = await fetch('https://' + SHOP + '/admin/api/' + API + ruta, { headers: { 'X-Shopify-Access-Token': TOKEN } });
-  if (r.status === 401 || r.status === 403) throw new Error('Shopify rechazó el token (revisa SHOPIFY_TOKEN y los permisos de la app)');
+  const url = 'https://' + SHOP + '/admin/api/' + API + ruta;
+  let r = await fetch(url, { headers: { 'X-Shopify-Access-Token': await getToken() } });
+  if ((r.status === 401 || r.status === 403) && CLIENT_ID && !TOKEN_FIJO) { // token caducado antes de tiempo: renovar y reintentar una vez
+    cache.exp = 0;
+    r = await fetch(url, { headers: { 'X-Shopify-Access-Token': await getToken() } });
+  }
+  if (r.status === 401 || r.status === 403) throw new Error('Shopify rechazó el acceso (revisa las credenciales y los permisos de la app)');
   if (!r.ok) throw new Error('Shopify respondió ' + r.status);
   return r.json();
 }
