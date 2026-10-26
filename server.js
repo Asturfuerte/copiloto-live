@@ -331,7 +331,14 @@ function send(res, code, obj) { res.writeHead(code, { 'content-type': 'applicati
 
 // ---- Acceso: PIN o token de sesión (emitido tras desbloquear con passkey / Face ID) ----
 const { Recordatorios } = require('./recordatorios');
-const AGENDA_FILE = process.env.AGENDA_FILE || (path.resolve(DOCS_DIR) !== path.resolve(BUNDLED_DOCS) ? path.join(path.dirname(DOCS_DIR), 'agenda.json') : path.join(__dirname, 'agenda.json'));
+// La agenda se guarda DENTRO de DOCS_DIR (el único directorio que seguro es persistente cuando hay volumen).
+// Antes se guardaba en el directorio padre de DOCS_DIR, que queda fuera del volumen si el montaje es exactamente DOCS_DIR, y se perdía en cada redespliegue.
+const AGENDA_FILE = process.env.AGENDA_FILE || path.join(DOCS_DIR, 'agenda.json');
+// Migración desde la ubicación antigua, si existiera y la nueva no
+try {
+  const OLD_AGENDA = path.resolve(DOCS_DIR) !== path.resolve(BUNDLED_DOCS) ? path.join(path.dirname(DOCS_DIR), 'agenda.json') : path.join(__dirname, 'agenda.json');
+  if (!process.env.AGENDA_FILE && !fs.existsSync(AGENDA_FILE) && fs.existsSync(OLD_AGENDA)) fs.copyFileSync(OLD_AGENDA, AGENDA_FILE);
+} catch (e) {}
 const agenda = new Recordatorios(AGENDA_FILE);
 const AGENDA_TOOL = {
   functionDeclarations: [
