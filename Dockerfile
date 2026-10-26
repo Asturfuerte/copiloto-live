@@ -3,7 +3,7 @@ RUN apk add --no-cache poppler-utils unzip tesseract-ocr tesseract-ocr-data-spa
 WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev --no-audit --no-fund
-COPY server.js documentos.js passkeys.js recordatorios.js push.js index.html ./
+COPY server.js documentos.js passkeys.js recordatorios.js push.js pedidos.js index.html ./
 COPY conocimiento ./conocimiento
 COPY documentos ./documentos
 COPY public ./public
