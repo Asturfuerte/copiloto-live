@@ -12,7 +12,7 @@
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ext = @('.pdf', '.docx', '.md', '.txt')
-$mios = @('matilde-sync.ps1', 'matilde-sync.json', 'matilde-sync.ejemplo.json', 'matilde-sync.estado.json', 'matilde-sync.log', 'matilde-sync.bat', 'ARRANCAR MATILDE SYNC.bat', 'LEEME.md', 'LEEME.txt')
+$mios = @('matilde-sync.ps1', 'matilde-sync.json', 'matilde-sync.ejemplo.json', 'matilde-sync.estado.json', 'matilde-avisos.estado.json', 'matilde-sync.log', 'matilde-sync.bat', 'ARRANCAR MATILDE SYNC.bat', 'LEEME.md', 'LEEME.txt')
 
 # ---- Dónde estoy y ordenar la carpeta (migración de la estructura antigua) ----
 $aqui = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -82,11 +82,50 @@ $visto = @{}
 Log "Matilde Sync vigilando $carpeta -> $url (cada $intervalo s). Deja esta ventana abierta (minimizada vale)."
 try { $s = Invoke-RestMethod -Uri "$url/salud" -TimeoutSec 15; Log ("Servidor OK: agente '{0}', {1} documento(s) cargado(s)." -f $s.nombre, @($s.documentos).Count) } catch { Log "Aviso: no se pudo consultar $url/salud ($($_.Exception.Message))" }
 
+# ---- Avisos de agenda como notificaciones de Windows ----
+$agente = 'Matilde'
+try { if ($s.nombre) { $agente = [string]$s.nombre } } catch {}
+$avisosEstadoPath = Join-Path $nt 'matilde-avisos.estado.json'
+$toastAppId = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
+
+function MostrarAviso($titulo, $texto) {
+  [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+  $xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
+  $t = $xml.GetElementsByTagName('text')
+  $t.Item(0).AppendChild($xml.CreateTextNode($titulo)) | Out-Null
+  $t.Item(1).AppendChild($xml.CreateTextNode($texto)) | Out-Null
+  $toast = New-Object Windows.UI.Notifications.ToastNotification($xml)
+  [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($toastAppId).Show($toast)
+}
+
+# Pide al servidor los avisos que tocan hoy y muestra un globito por cada uno (una sola vez al día por aviso)
+function ComprobarAvisos {
+  $r = Invoke-RestMethod -Uri "$url/avisos?pin=$(Enc $pin)" -TimeoutSec 20
+  $hoy = [string]$r.hoy
+  $mostrados = @()
+  if (Test-Path $avisosEstadoPath) {
+    try { $j = Get-Content $avisosEstadoPath -Raw -Encoding UTF8 | ConvertFrom-Json; if ($j.fecha -eq $hoy) { $mostrados = @($j.mostrados) } } catch {}
+  }
+  $nuevos = $false
+  foreach ($a in @($r.avisos)) {
+    if (-not $a.id -or ($mostrados -contains $a.id)) { continue }
+    try { MostrarAviso "Agenda de $agente" ([string]$a.descripcion); Log "Aviso de agenda: $($a.descripcion)" } catch { Log "No se pudo mostrar el aviso de Windows: $($_.Exception.Message)" }
+    $mostrados += $a.id; $nuevos = $true
+    Start-Sleep -Milliseconds 800
+  }
+  if ($nuevos -or -not (Test-Path $avisosEstadoPath)) {
+    @{ fecha = $hoy; mostrados = $mostrados } | ConvertTo-Json | Set-Content -Path $avisosEstadoPath -Encoding UTF8
+  }
+}
+try { ComprobarAvisos } catch { Log "Aviso: no se pudieron consultar los avisos de agenda ($($_.Exception.Message))" }
+$cadaAvisos = [math]::Max(1, [int](600 / [math]::Max(1, $intervalo)))   # consulta los avisos cada ~10 minutos
+
 $vuelta = 0
 while ($true) {
   try {
     $vuelta++
     if ($vuelta % 30 -eq 0) { try { Ordenar } catch {} }   # cada ~5 min mantiene la carpeta ordenada
+    if ($vuelta % $cadaAvisos -eq 0) { try { ComprobarAvisos } catch {} }   # avisos de agenda como globitos de Windows
     $ficheros = Get-ChildItem -Path $carpeta -File | Where-Object { $ext -contains $_.Extension.ToLower() -and -not $_.Name.StartsWith('.') -and -not $_.Name.StartsWith('~$') -and $_.Name -notlike 'LEEME*' -and $_.Name -notlike 'matilde-sync*' -and $_.Name -notlike 'ARRANCAR*' -and $_.Name -notlike '* (OCR).txt' }
     $nombres = @{}
     foreach ($f in $ficheros) {

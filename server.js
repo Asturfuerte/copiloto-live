@@ -340,6 +340,25 @@ try {
   if (!process.env.AGENDA_FILE && !fs.existsSync(AGENDA_FILE) && fs.existsSync(OLD_AGENDA)) fs.copyFileSync(OLD_AGENDA, AGENDA_FILE);
 } catch (e) {}
 const agenda = new Recordatorios(AGENDA_FILE);
+
+// ---------- Avisos push (móvil/navegador) y planificador diario ----------
+const { Push } = require('./push');
+const push = new Push(path.dirname(AGENDA_FILE), 'mailto:' + (process.env.PUSH_CONTACTO || 'fuerno@gmail.com'));
+const PUSH_HORA = process.env.PUSH_HORA || '09:00'; // hora local (Canarias) del aviso diario
+function textoAvisos(avisos, hoyYmd) {
+  return avisos.map(it => agenda.describe(it, hoyYmd).replace(/^\[\w+\] /, '')).join('\n');
+}
+setInterval(() => {
+  try {
+    const n = require('./recordatorios').ahora();
+    if (n.hm < PUSH_HORA) return;
+    if (push.estado.ultimoEnvio === n.ymd) return;
+    push.estado.ultimoEnvio = n.ymd; push.save();
+    const avisos = agenda.avisosDeHoy();
+    if (!avisos.length || !push.subs.length) return;
+    push.send('Agenda de ' + AGENT_NAME, textoAvisos(avisos, n.ymd)).then(k => console.log('Aviso diario de agenda enviado a ' + k + ' dispositivo(s)'));
+  } catch (e) { console.log('Error en el aviso diario: ' + e.message); }
+}, 60000);
 const AGENDA_TOOL = {
   functionDeclarations: [
     { name: 'guardar_recordatorio', description: 'Guarda en la agenda una cita, una tarea con fecha o una nota que el usuario quiera recordar. Úsala en cuanto el usuario mencione algo que quiere apuntar o recordar ("tengo cita el jueves", "apúntame que…", "recuérdame…"). Calcula la fecha exacta a partir de la fecha de hoy que tienes en las instrucciones; si la fecha es ambigua, pregunta antes.',
@@ -394,6 +413,10 @@ const server = http.createServer((req, res) => {
       ],
     }));
   }
+  if (req.method === 'GET' && req.url === '/sw.js') {
+    const f = path.join(PUBLIC_DIR, 'sw.js');
+    if (fs.existsSync(f)) { res.writeHead(200, { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'no-cache' }); return res.end(fs.readFileSync(f)); }
+  }
   if (req.method === 'GET' && /^\/[\w.-]+\.(png|svg|ico)$/.test(req.url)) {
     const f = path.join(PUBLIC_DIR, req.url.slice(1));
     if (fs.existsSync(f)) { res.writeHead(200, { 'content-type': MIME[path.extname(f)] || 'application/octet-stream', 'cache-control': 'public, max-age=86400' }); return res.end(fs.readFileSync(f)); }
@@ -430,6 +453,25 @@ const server = http.createServer((req, res) => {
     if (req.method === 'DELETE' && id) { try { agenda.remove(id); return send(res, 200, { ok: true }); } catch (e) { return send(res, 404, { error: e.message }); } }
     if (req.method === 'PATCH' && id) return readJson(req, (e, body) => { if (e) return send(res, 400, { error: 'JSON' }); try { send(res, 200, { ok: true, item: agenda.update(id, body) }); } catch (err) { send(res, 400, { error: err.message }); } });
     return send(res, 405, { error: 'Método no permitido' });
+  }
+
+  // ---- Avisos (para el sync del PC y los push del móvil) ----
+  if (u.pathname === '/avisos') {
+    if (!authorized(u, req)) return send(res, 401, { error: 'PIN incorrecto' });
+    const hoy = require('./recordatorios').ahora();
+    const avisos = agenda.avisosDeHoy();
+    return send(res, 200, { hoy: hoy.ymd, ahora: hoy.texto, avisos: avisos.map(it => ({ id: it.id, texto: it.texto, fecha: it.fecha, hora: it.hora, lugar: it.lugar, faltan: it.faltan, descripcion: agenda.describe(it, hoy.ymd).replace(/^\[\w+\] /, '') })) });
+  }
+  if (u.pathname.startsWith('/push')) {
+    if (!authorized(u, req)) return send(res, 401, { error: 'PIN incorrecto' });
+    if (req.method === 'GET' && u.pathname === '/push/clave') return send(res, 200, { ok: push.ok, clave: push.keys ? push.keys.publicKey : null, dispositivos: push.subs.length });
+    if (req.method === 'POST' && u.pathname === '/push/suscribir') {
+      return readJson(req, (e, body) => { if (e) return send(res, 400, { error: 'JSON' }); try { const n = push.add(body.sub, body.nombre); console.log('Dispositivo suscrito a avisos push (' + n + ' en total)'); send(res, 200, { ok: true, dispositivos: n }); } catch (err) { send(res, 400, { error: err.message }); } });
+    }
+    if (req.method === 'POST' && u.pathname === '/push/prueba') {
+      return push.send('Prueba de ' + AGENT_NAME, 'Así te avisaré de tus citas. 👋').then(n => send(res, 200, { ok: true, enviados: n })).catch(e => send(res, 500, { error: e.message }));
+    }
+    return send(res, 404, { error: 'No encontrado' });
   }
 
   // ---- Gestión de documentos (misma protección que la sesión: PIN o token) ----

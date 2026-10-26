@@ -141,6 +141,7 @@ input[type=password] { width: 100%; }
   <section class="panel" id="agendaBox">
     <h2>Agenda</h2>
     <p class="hint">Dile a __AGENT_NAME__ "apúntame…" o "tengo cita el…" y lo guarda aquí. Te lo recuerda al empezar cada sesión.</p>
+    <button class="small" id="agAvisos" style="display:none">🔔 Avisarme de las citas en este dispositivo</button>
     <ul class="docs" id="agendaList"></ul>
     <div class="row">
       <input type="text" id="agTexto" placeholder="Añadir a mano: qué" style="flex:2;min-width:140px;font:inherit;font-size:16px;padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink)">
@@ -279,7 +280,7 @@ input[type=password] { width: 100%; }
   }
   function showApp() { $('lock').hidden = true; $('app').hidden = false; $('appHead').hidden = false; }
   function onUnlocked() {
-    authError(''); showErr(''); loadDocs(); loadAgenda();
+    authError(''); showErr(''); loadDocs(); loadAgenda(); initPush();
     if (pin && hasWebAuthn && !bioRegistered() && !sessionStorage.getItem('bio_no')) { lockStep('lockOffer'); $('lock').hidden = false; return; }
     showApp();
   }
@@ -357,7 +358,7 @@ input[type=password] { width: 100%; }
   // Arranque: si hay token de sesión válido, entra; si hay passkey, pide Face ID; si no, PIN
   (async () => {
     if (token) { const r = await fetch('/auth/estado?token=' + encodeURIComponent(token)).then(x => x.json()).catch(() => null); if (r && r.sesion) { onUnlocked(); return; } token = ''; try { sessionStorage.removeItem('copiloto_token'); } catch (e) {} }
-    if (pin && !bioRegistered()) { showApp(); loadDocs(); loadAgenda(); return; }
+    if (pin && !bioRegistered()) { showApp(); loadDocs(); loadAgenda(); initPush(); return; }
     showLock();
     if (hasWebAuthn && bioRegistered()) bioUnlock();
   })();
@@ -393,6 +394,35 @@ input[type=password] { width: 100%; }
     $('agTexto').value = ''; $('agFecha').value = ''; $('agHora').value = ''; loadAgenda();
   });
   $('agTexto').addEventListener('keydown', e => { if (e.key === 'Enter') $('agAdd').click(); });
+
+  // ---- Avisos push (notificaciones aunque la app esté cerrada) ----
+  let pushInited = false;
+  const b64ToU8 = s => { const p = '='.repeat((4 - s.length % 4) % 4); const r = atob((s + p).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from(r, c => c.charCodeAt(0)); };
+  async function initPush() {
+    if (pushInited || !('serviceWorker' in navigator) || !('PushManager' in window)) return;
+    pushInited = true;
+    try {
+      const j = await fetch('/push/clave?' + authQS()).then(x => x.json());
+      if (!j.ok || !j.clave) return;
+      const reg = await navigator.serviceWorker.register('/sw.js');
+      const btn = $('agAvisos');
+      const sub = await reg.pushManager.getSubscription();
+      if (sub && Notification.permission === 'granted') return; // ya activado aquí
+      btn.style.display = '';
+      btn.addEventListener('click', async () => {
+        try {
+          const perm = await Notification.requestPermission();
+          if (perm !== 'granted') { showErr('No has dado permiso de notificaciones.'); return; }
+          const s = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToU8(j.clave) });
+          const r = await fetch('/push/suscribir?' + authQS(), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sub: s.toJSON(), nombre: navigator.userAgent }) });
+          if (!r.ok) { showErr('No se pudo guardar la suscripción.'); return; }
+          btn.textContent = '🔔 Avisos activados';
+          btn.disabled = true;
+          fetch('/push/prueba?' + authQS(), { method: 'POST' }); // notificación de prueba al momento
+        } catch (e) { showErr('No se pudieron activar los avisos: ' + e.message); }
+      });
+    } catch (e) {}
+  }
 
   // ---- Documentos ----
   const fmtBytes = b => b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB';

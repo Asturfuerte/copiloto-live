@@ -20,3 +20,4 @@ Vigila la carpeta `Matilde` del PC y sube a Copiloto Live cualquier documento nu
 - Si un fichero falla, lo apunta en `matilde-sync.log` y no lo reintenta hasta que cambie.
 - `borrarRemoto: true` hace que, al quitar un fichero de la carpeta, también se borre en Copiloto Live. Por defecto está desactivado.
 - Las subcarpetas no se vigilan.
+- Avisos de agenda: al arrancar y cada ~10 minutos consulta los avisos del día en Copiloto Live y los muestra como notificación de Windows (una vez al día por aviso; el control está en `matilde-avisos.estado.json`).
