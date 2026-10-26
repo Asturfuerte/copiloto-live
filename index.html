@@ -176,6 +176,7 @@ input[type=password] { width: 100%; }
   const fromB64u = s => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
 
   let ws = null, actx = null, micStream = null, proc = null, srcNode = null, running = false;
+  let starting = false, reconT = null;
   let playAt = 0; const scheduled = [];
   let curIn = '', curOut = '', inEl = null, outEl = null;
 
@@ -212,11 +213,41 @@ input[type=password] { width: 100%; }
   }
   function toPCM16(f32) { const b = new ArrayBuffer(f32.length * 2); const dv = new DataView(b); for (let i = 0; i < f32.length; i++) { const s = Math.max(-1, Math.min(1, f32[i])); dv.setInt16(i * 2, s < 0 ? s * 32768 : s * 32767, true); } return b; }
 
+  // Un único contexto de audio reutilizado (iPhone limita cuántos se pueden crear).
+  // resume() sin un toque del usuario puede quedarse colgado en iOS: le ponemos tope de tiempo.
+  async function ensureAudio() {
+    if (!actx || actx.state === 'closed') {
+      try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { actx = null; return 'no-audio'; }
+    }
+    if (actx.state !== 'running') {
+      try { await Promise.race([actx.resume(), new Promise((_, rej) => setTimeout(rej, 1500))]); } catch (e) {}
+    }
+    return actx.state === 'running' ? 'ok' : 'need-tap';
+  }
+  function setBtn(on, label) { $('go').textContent = label || (on ? 'Parar' : 'Empezar'); $('go').classList.toggle('on', on); }
+  // iOS exige un toque para reactivar el audio: lo pedimos claramente en vez de quedarnos colgados
+  function needTap() {
+    running = false; stopAudio(); stopPlayback();
+    if (ws) { ws.onclose = null; ws.onerror = null; try { ws.close(); } catch (e) {} ws = null; }
+    clearTimeout(reconT);
+    status('busy', 'Toca «Reanudar» para seguir');
+    setBtn(false, 'Reanudar');
+  }
+  function resetUI() { running = false; clearTimeout(reconT); status('off', 'Parado'); setBtn(false); $('meter').style.width = '0'; }
+  function scheduleReconnect(ms) { clearTimeout(reconT); reconT = setTimeout(() => { if (running && !starting) start(); }, ms); }
+
   async function start() {
+    if (starting) return; starting = true;
+    try { await doStart(); } finally { starting = false; }
+  }
+  async function doStart() {
     showErr('');
-    try { actx = new (window.AudioContext || window.webkitAudioContext)(); await actx.resume(); } catch (e) { showErr('Este navegador no permite audio.'); return; }
+    const audio = await ensureAudio();
+    if (audio === 'no-audio') { showErr('Este navegador no permite audio.'); resetUI(); return; }
+    if (audio === 'need-tap') { needTap(); return; }
     try { micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); }
-    catch (e) { showErr('Sin permiso de micrófono. En iPhone: Ajustes > Safari > Micrófono > Permitir.'); return; }
+    catch (e) { showErr('Sin permiso de micrófono. En iPhone: Ajustes > Safari > Micrófono > Permitir.'); resetUI(); return; }
+    if (!running) { stopAudio(); return; } // el usuario ha parado mientras conectábamos
 
     const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
     ws = new WebSocket(proto + location.host + '/ws?' + authQS() + '&modo=' + modo() + '&voz=' + encodeURIComponent($('voz').value));
@@ -245,10 +276,10 @@ input[type=password] { width: 100%; }
       else if (m.tipo === 'fin_turno') { endTurn(); setTimeout(() => { if (running && !scheduled.length) status('on', 'Escuchando'); }, 300); }
       else if (m.tipo === 'agenda') { loadAgenda(); line('sys').textContent = (m.accion === 'nuevo' ? '📅 Apuntado: ' : m.accion === 'hecho' ? '✅ Hecho: ' : '✏️ Cambiado: ') + m.item.texto + (m.item.fecha ? ' (' + m.item.fecha + (m.item.hora ? ' ' + m.item.hora : '') + ')' : ''); }
       else if (m.tipo === 'aviso') { if (/^Consultando documentos/.test(m.texto)) line('sys').textContent = '📄 ' + m.texto; else showErr(m.texto); }
-      else if (m.tipo === 'cerrado') { showErr(m.motivo || 'Sesión cerrada'); if (running) { stopAudio(); setTimeout(() => { if (running) start(); }, 800); } }
+      else if (m.tipo === 'cerrado') { showErr(m.motivo || 'Sesión cerrada'); if (running) { stopAudio(); scheduleReconnect(800); } }
     };
     ws.onerror = () => showErr('No se pudo conectar. Vuelve a desbloquear la app.');
-    ws.onclose = () => { if (running) { stopAudio(); status('busy', 'Reconectando'); setTimeout(() => { if (running) start(); }, 1000); } };
+    ws.onclose = () => { if (running) { stopAudio(); status('busy', 'Reconectando'); scheduleReconnect(1000); } };
   }
   function stopAudio() {
     try { proc && proc.disconnect(); srcNode && srcNode.disconnect(); } catch (e) {}
@@ -256,15 +287,15 @@ input[type=password] { width: 100%; }
     proc = null; srcNode = null; micStream = null;
   }
   function stop() {
-    running = false; stopAudio(); stopPlayback();
-    try { ws && ws.close(); } catch (e) {} ws = null;
+    running = false; clearTimeout(reconT); stopAudio(); stopPlayback();
+    if (ws) { ws.onclose = null; ws.onerror = null; try { ws.close(); } catch (e) {} ws = null; }
     status('off', 'Parado'); $('meter').style.width = '0';
   }
 
   $('go').addEventListener('click', () => {
     if (!pinOk()) return;
-    if (running) { stop(); $('go').textContent = 'Empezar'; $('go').classList.remove('on'); }
-    else { $('go').textContent = 'Parar'; $('go').classList.add('on'); start(); }
+    if (running) { stop(); setBtn(false); }
+    else { running = true; setBtn(true); start(); }
   });
 
   // ---- Pantalla de entrada (PIN / Face ID) ----
@@ -343,17 +374,35 @@ input[type=password] { width: 100%; }
 
   // Al volver a primer plano (iOS no recarga la app): reconectar la sesión y, si ha pasado un rato, volver a bloquear
   let hiddenAt = 0; const LOCK_AFTER_MS = 60 * 1000;
-  function lockAgain() { token = ''; try { sessionStorage.removeItem('copiloto_token'); } catch (e) {} if (running) { stop(); $('go').textContent = 'Empezar'; $('go').classList.remove('on'); } showLock(); if (hasWebAuthn && bioRegistered()) bioUnlock(); }
+  function lockAgain() { token = ''; try { sessionStorage.removeItem('copiloto_token'); } catch (e) {} if (running) stop(); setBtn(false); showLock(); if (hasWebAuthn && bioRegistered()) bioUnlock(); }
+  // iOS corta micro, audio y conexión en segundo plano: al volver, reconectar de cero
+  function revive() {
+    stopAudio(); stopPlayback();
+    const old = ws; ws = null; if (old) { old.onclose = null; old.onerror = null; try { old.close(); } catch (e) {} }
+    status('busy', 'Reconectando');
+    scheduleReconnect(300);
+  }
+  function onBack(away) {
+    if (bioRegistered() && hasWebAuthn && away > LOCK_AFTER_MS) { lockAgain(); return; }
+    if (!running) {
+      // Estábamos esperando un toque ("Reanudar"): probamos otra vez, a veces iOS ya lo permite
+      if ($('go').textContent === 'Reanudar') { running = true; setBtn(true); start(); }
+      return;
+    }
+    const dead = !ws || ws.readyState !== 1 || !actx || actx.state !== 'running';
+    if (dead || away > 5000) revive();
+  }
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { hiddenAt = Date.now(); return; }
     const away = hiddenAt ? Date.now() - hiddenAt : 0; hiddenAt = 0;
-    if (bioRegistered() && hasWebAuthn && away > LOCK_AFTER_MS) { lockAgain(); return; }
-    if (running) { // iOS corta micro y conexión en segundo plano: reconectar
-      const dead = !ws || ws.readyState !== 1 || (actx && actx.state !== 'running');
-      if (dead || away > 5000) { stopAudio(); stopPlayback(); const old = ws; ws = null; if (old) { old.onclose = null; old.onerror = null; try { old.close(); } catch (e) {} } status('busy', 'Reconectando'); setTimeout(() => { if (running) start(); }, 300); }
-    }
+    onBack(away);
   });
-  window.addEventListener('pageshow', ev => { if (ev.persisted && bioRegistered() && hasWebAuthn) lockAgain(); });
+  // La página puede volver "congelada" de la caché del navegador sin pasar por visibilitychange
+  window.addEventListener('pageshow', ev => {
+    if (!ev.persisted) return;
+    if (bioRegistered() && hasWebAuthn) { lockAgain(); return; }
+    onBack(LOCK_AFTER_MS); // tiempo fuera desconocido: tratamos la sesión como muerta y reconectamos
+  });
 
   // Arranque: si hay token de sesión válido, entra; si hay passkey, pide Face ID; si no, PIN
   (async () => {
