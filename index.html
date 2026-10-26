@@ -151,6 +151,13 @@ input[type=password] { width: 100%; }
     </div>
   </section>
 
+  <section class="panel" id="pedidosBox">
+    <h2>Pedidos de la tienda</h2>
+    <p class="hint">El almacén avisa aquí (y con una notificación) cada vez que un pedido cambia: preparado, enviado, incidencia… Pregúntale a __AGENT_NAME__ "¿cómo van los pedidos?".</p>
+    <ul class="docs" id="pedidosList"></ul>
+    <p class="hint" id="webhookInfo" hidden></p>
+  </section>
+
   <section class="panel" id="docsBox">
     <h2>Documentos</h2>
     <p class="hint">Contratos, expedientes, sentencias, informes… (PDF, Word, texto; máx. 50 MB; los escaneos se leen con OCR). El copiloto los consulta cuando le preguntas por ellos.</p>
@@ -311,7 +318,7 @@ input[type=password] { width: 100%; }
   }
   function showApp() { $('lock').hidden = true; $('app').hidden = false; $('appHead').hidden = false; }
   function onUnlocked() {
-    authError(''); showErr(''); loadDocs(); loadAgenda(); initPush();
+    authError(''); showErr(''); loadDocs(); loadAgenda(); loadPedidos(); initPush();
     if (pin && hasWebAuthn && !bioRegistered() && !sessionStorage.getItem('bio_no')) { lockStep('lockOffer'); $('lock').hidden = false; return; }
     showApp();
   }
@@ -407,7 +414,7 @@ input[type=password] { width: 100%; }
   // Arranque: si hay token de sesión válido, entra; si hay passkey, pide Face ID; si no, PIN
   (async () => {
     if (token) { const r = await fetch('/auth/estado?token=' + encodeURIComponent(token)).then(x => x.json()).catch(() => null); if (r && r.sesion) { onUnlocked(); return; } token = ''; try { sessionStorage.removeItem('copiloto_token'); } catch (e) {} }
-    if (pin && !bioRegistered()) { showApp(); loadDocs(); loadAgenda(); initPush(); return; }
+    if (pin && !bioRegistered()) { showApp(); loadDocs(); loadAgenda(); loadPedidos(); initPush(); return; }
     showLock();
     if (hasWebAuthn && bioRegistered()) bioUnlock();
   })();
@@ -470,6 +477,34 @@ input[type=password] { width: 100%; }
           fetch('/push/prueba?' + authQS(), { method: 'POST' }); // notificación de prueba al momento
         } catch (e) { showErr('No se pudieron activar los avisos: ' + e.message); }
       });
+    } catch (e) {}
+  }
+
+  // ---- Pedidos de la tienda ----
+  async function loadPedidos() {
+    if (!unlocked()) return;
+    try {
+      const r = await fetch('/pedidos?' + authQS()); if (!r.ok) return;
+      const j = await r.json();
+      const ul = $('pedidosList'); ul.innerHTML = '';
+      if (!(j.pedidos || []).length) {
+        const li = document.createElement('li'); li.className = 'empty'; li.textContent = 'Sin avisos del almacén todavía.'; ul.append(li);
+      } else for (const p of j.pedidos) {
+        const li = document.createElement('li');
+        const sp = document.createElement('span'); sp.style.whiteSpace = 'normal';
+        sp.textContent = '🛒 ' + p.pedido + ' — ' + (p.estado || 'sin estado') + (p.detalles ? ' · ' + p.detalles : '');
+        const sm = document.createElement('small');
+        sm.textContent = (p.transportista ? p.transportista + ' · ' : '') + (p.fecha ? p.fecha.slice(0, 16).replace('T', ' ') : '');
+        li.append(sp, sm);
+        if (p.url || p.seguimiento) {
+          const a = document.createElement('a'); a.className = 'del'; a.style.color = 'var(--accent)'; a.textContent = 'Seguir envío';
+          a.target = '_blank'; a.rel = 'noopener';
+          if (p.url) a.href = p.url; else { a.href = 'https://www.google.com/search?q=' + encodeURIComponent((p.transportista || '') + ' seguimiento ' + p.seguimiento); }
+          li.append(a);
+        }
+        ul.append(li);
+      }
+      if (j.webhook) { $('webhookInfo').hidden = false; $('webhookInfo').textContent = 'URL para el panel del almacén (Configuración → API Webhooks): ' + j.webhook; }
     } catch (e) {}
   }
 

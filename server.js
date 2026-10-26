@@ -251,7 +251,7 @@ function startSession(client, params) {
         responseModalities: ['AUDIO'],
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } }, languageCode: 'es-ES' },
       },
-      systemInstruction: { parts: [{ text: PERSONA[modo] + AGENDA_RULES + agenda.resumenParaSesion() + docsRules() + (KNOWLEDGE ? KNOWLEDGE_RULES + KNOWLEDGE : '') }] },
+      systemInstruction: { parts: [{ text: PERSONA[modo] + AGENDA_RULES + agenda.resumenParaSesion() + PEDIDOS_RULES + docsRules() + (KNOWLEDGE ? KNOWLEDGE_RULES + KNOWLEDGE : '') }] },
       realtimeInputConfig: { automaticActivityDetection: { disabled: false, endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH', silenceDurationMs: 500 } },
       inputAudioTranscription: {},
       outputAudioTranscription: {},
@@ -261,6 +261,7 @@ function startSession(client, params) {
   if (ENABLE_SEARCH) setup.setup.tools.push({ googleSearch: {} });
   if (DOCS.docs.length) setup.setup.tools.push(docsTool());
   setup.setup.tools.push(AGENDA_TOOL);
+  setup.setup.tools.push(PEDIDOS_TOOL);
   if (!setup.setup.tools.length) delete setup.setup.tools;
 
   gem = connectGemini(
@@ -313,6 +314,11 @@ function startSession(client, params) {
             console.log(c.name + '(' + JSON.stringify(a) + ') -> ' + result.slice(0, 80));
             return { id: c.id, name: c.name, response: { result } };
           }
+          if (c.name === 'estado_pedidos') {
+            const result = pedidos.resumen(c.args && c.args.pedido);
+            console.log('estado_pedidos("' + ((c.args && c.args.pedido) || '') + '") -> ' + result.length + ' chars');
+            return { id: c.id, name: c.name, response: { result } };
+          }
           if (c.name === 'leer_documento') {
             const documento = String((c.args && c.args.documento) || ''); const parte = Number(c.args && c.args.parte) || 1;
             sendText(client, { tipo: 'aviso', texto: 'Consultando documentos: leyendo ' + documento + (parte > 1 ? ' (parte ' + parte + ')' : '') });
@@ -351,6 +357,23 @@ try {
   if (!process.env.AGENDA_FILE && !fs.existsSync(AGENDA_FILE) && fs.existsSync(OLD_AGENDA)) fs.copyFileSync(OLD_AGENDA, AGENDA_FILE);
 } catch (e) {}
 const agenda = new Recordatorios(AGENDA_FILE);
+
+// ---------- Pedidos de la tienda (webhook de Coinnecta) ----------
+const { Pedidos } = require('./pedidos');
+const pedidos = new Pedidos(path.join(path.dirname(AGENDA_FILE), 'pedidos.json'));
+const PEDIDOS_TOOL = {
+  functionDeclarations: [{
+    name: 'estado_pedidos',
+    description: 'Devuelve el estado de los pedidos de la tienda online (los avisos que manda el almacén: preparado, enviado, incidencia, entregado, con transportista y código de seguimiento). Úsala cuando pregunten por los pedidos de la tienda, cómo va un pedido, si se ha enviado algo, o por el seguimiento de un envío.',
+    parameters: { type: 'OBJECT', properties: {
+      pedido: { type: 'STRING', description: 'Opcional: número de pedido (p. ej. "1042") o palabra del estado ("enviado", "incidencia") para filtrar. Vacío = los últimos.' },
+    } },
+  }],
+};
+const PEDIDOS_RULES = `
+
+=== PEDIDOS DE LA TIENDA ===
+Tienes la función estado_pedidos con las últimas actualizaciones que manda el almacén sobre los pedidos de la tienda online. Si preguntan por un pedido, por los envíos o por el seguimiento de un paquete, llámala antes de responder y contesta solo con lo que devuelva. Di los estados en lenguaje natural y, si hay código de seguimiento, dilo despacio y claro.`;
 
 // ---------- Avisos push (móvil/navegador) y planificador diario ----------
 const { Push } = require('./push');
@@ -487,6 +510,30 @@ const server = http.createServer((req, res) => {
       return push.send('Prueba de ' + AGENT_NAME, 'Así te avisaré de tus citas. 👋').then(n => send(res, 200, { ok: true, enviados: n })).catch(e => send(res, 500, { error: e.message }));
     }
     return send(res, 404, { error: 'No encontrado' });
+  }
+
+  // ---- Pedidos de la tienda ----
+  // Webhook que Coinnecta llama con cada actualización de pedido. No usa el PIN:
+  // se autentica con la clave secreta que va en la propia URL configurada en Coinnecta.
+  if (u.pathname === '/webhook/coinnecta') {
+    if (req.method !== 'POST') return send(res, 405, { error: 'Método no permitido' });
+    if ((u.searchParams.get('clave') || '') !== pedidos.data.clave) return send(res, 401, { error: 'Clave incorrecta' });
+    return readJson(req, (e, body) => {
+      if (e) return send(res, 400, { error: 'JSON' });
+      try {
+        const { ped, ev } = pedidos.evento(body);
+        console.log('Webhook Coinnecta: pedido ' + pedidos.nombre(ped) + ' -> ' + ev.estado + (ev.seguimiento ? ' (' + ev.seguimiento + ')' : ''));
+        let cuerpo = ev.estado + (ev.detalles ? ' · ' + ev.detalles : '') + (ped.transportista ? ' · ' + ped.transportista : '') + (ev.seguimiento ? '\nSeguimiento: ' + ev.seguimiento : '');
+        push.send('🛒 Pedido ' + pedidos.nombre(ped), cuerpo).then(n => { if (n) console.log('Aviso de pedido enviado a ' + n + ' dispositivo(s)'); }).catch(() => {});
+        send(res, 200, { ok: true });
+      } catch (err) { send(res, 400, { error: err.message }); }
+    });
+  }
+  // Listado para la web (protegido como todo lo demás) + la URL del webhook para pegarla en Coinnecta.
+  if (u.pathname === '/pedidos' && req.method === 'GET') {
+    if (!authorized(u, req)) return send(res, 401, { error: 'PIN incorrecto' });
+    const { origin } = rpInfo(req);
+    return send(res, 200, { pedidos: pedidos.lista().slice(0, 50), webhook: origin + '/webhook/coinnecta?clave=' + pedidos.data.clave });
   }
 
   // ---- Gestión de documentos (misma protección que la sesión: PIN o token) ----
