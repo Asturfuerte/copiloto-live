@@ -297,6 +297,17 @@ function startSession(client, params) {
               if (c.name === 'guardar_recordatorio') { const it = agenda.add({ texto: a.texto, fecha: a.fecha, hora: a.hora, lugar: a.lugar, tipo: a.tipo }); result = 'Guardado: ' + agenda.describe(it, require('./recordatorios').ahora().ymd); sendText(client, { tipo: 'agenda', accion: 'nuevo', item: it }); }
               else if (c.name === 'listar_recordatorios') result = agenda.listar(a.desde, a.hasta);
               else if (c.name === 'completar_recordatorio') { const it = agenda.update(String(a.id || ''), { hecho: true }); result = 'Completado: ' + it.texto; sendText(client, { tipo: 'agenda', accion: 'hecho', item: it }); }
+              else if (c.name === 'cambiar_hora_aviso') {
+                if (!a.hora) result = 'El aviso diario está puesto a las ' + horaAviso() + '.';
+                else if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(a.hora)) result = 'Hora no válida; dime una hora en formato HH:MM de 24 horas.';
+                else {
+                  const n2 = require('./recordatorios').ahora();
+                  push.estado.horaAviso = a.hora;
+                  if (push.estado.ultimoEnvio === n2.ymd && n2.hm < a.hora) delete push.estado.ultimoEnvio; // si la nueva hora aún no ha llegado hoy, el aviso de hoy se enviará a esa hora
+                  push.save();
+                  result = 'Hecho: el aviso diario de la agenda se enviará a las ' + a.hora + '.';
+                }
+              }
               else { const it = agenda.update(String(a.id || ''), { texto: a.texto, fecha: a.fecha, hora: a.hora, lugar: a.lugar }); result = 'Modificado: ' + agenda.describe(it, require('./recordatorios').ahora().ymd); sendText(client, { tipo: 'agenda', accion: 'cambio', item: it }); }
             } catch (e) { result = 'Error: ' + e.message; }
             console.log(c.name + '(' + JSON.stringify(a) + ') -> ' + result.slice(0, 80));
@@ -344,14 +355,16 @@ const agenda = new Recordatorios(AGENDA_FILE);
 // ---------- Avisos push (móvil/navegador) y planificador diario ----------
 const { Push } = require('./push');
 const push = new Push(path.dirname(AGENDA_FILE), 'mailto:' + (process.env.PUSH_CONTACTO || 'fuerno@gmail.com'));
-const PUSH_HORA = process.env.PUSH_HORA || '09:00'; // hora local (Canarias) del aviso diario
+// Hora local (Canarias) del aviso diario: se puede cambiar de viva voz ("avísame a las 8") y queda guardada.
+if (!push.estado.horaAviso) { push.estado.horaAviso = process.env.PUSH_HORA || '09:00'; push.save(); }
+function horaAviso() { return push.estado.horaAviso || '09:00'; }
 function textoAvisos(avisos, hoyYmd) {
   return avisos.map(it => agenda.describe(it, hoyYmd).replace(/^\[\w+\] /, '')).join('\n');
 }
 setInterval(() => {
   try {
     const n = require('./recordatorios').ahora();
-    if (n.hm < PUSH_HORA) return;
+    if (n.hm < horaAviso()) return;
     if (push.estado.ultimoEnvio === n.ymd) return;
     push.estado.ultimoEnvio = n.ymd; push.save();
     const avisos = agenda.avisosDeHoy();
@@ -375,12 +388,14 @@ const AGENDA_TOOL = {
       parameters: { type: 'OBJECT', properties: { id: { type: 'STRING' } }, required: ['id'] } },
     { name: 'modificar_recordatorio', description: 'Cambia la fecha, la hora, el lugar o el texto de un recordatorio existente (p. ej. "la cita del dentista pásala al viernes").',
       parameters: { type: 'OBJECT', properties: { id: { type: 'STRING' }, texto: { type: 'STRING' }, fecha: { type: 'STRING', description: 'AAAA-MM-DD' }, hora: { type: 'STRING', description: 'HH:MM' }, lugar: { type: 'STRING' } }, required: ['id'] } },
+    { name: 'cambiar_hora_aviso', description: 'Cambia la hora a la que cada día se envía el aviso con las citas (notificación al móvil y al PC). Úsala cuando pidan que avise a otra hora ("avísame a las 8", "manda el aviso por la tarde"). Sin el parámetro hora, devuelve a qué hora está puesto ahora.',
+      parameters: { type: 'OBJECT', properties: { hora: { type: 'STRING', description: 'HH:MM en 24 horas (p. ej. "08:00", "20:30"). Vacío para consultar.' } } } },
   ],
 };
 const AGENDA_RULES = `
 
 === AGENDA ===
-Tienes una agenda persistente con las funciones guardar_recordatorio, listar_recordatorios, completar_recordatorio y modificar_recordatorio. Si el usuario menciona una cita, un plazo, algo que tiene que hacer o algo que quiere recordar, guárdalo (confirma en una frase: "Apuntado: dentista, jueves 23 a las 10"). Para fechas relativas usa la fecha de hoy. Si te pregunta qué tiene pendiente o qué hay esta semana, lista. Cuando diga que algo ya está hecho o se cancela, complétalo. Al empezar la sesión, si hay citas vencidas, de hoy o de los próximos días, recuérdaselas una vez, brevemente.`;
+Tienes una agenda persistente con las funciones guardar_recordatorio, listar_recordatorios, completar_recordatorio, modificar_recordatorio y cambiar_hora_aviso. Cada día se envía un aviso con las citas que tocan (notificación al móvil y al PC); si el usuario pide que se le avise a otra hora o pregunta a qué hora se le avisa, usa cambiar_hora_aviso. Si el usuario menciona una cita, un plazo, algo que tiene que hacer o algo que quiere recordar, guárdalo (confirma en una frase: "Apuntado: dentista, jueves 23 a las 10"). Para fechas relativas usa la fecha de hoy. Si te pregunta qué tiene pendiente o qué hay esta semana, lista. Cuando diga que algo ya está hecho o se cancela, complétalo. Al empezar la sesión, si hay citas vencidas, de hoy o de los próximos días, recuérdaselas una vez, brevemente.`;
 
 const { Passkeys } = require('./passkeys');
 const PASSKEYS_FILE = process.env.PASSKEYS_FILE || (path.resolve(DOCS_DIR) !== path.resolve(BUNDLED_DOCS) ? path.join(path.dirname(DOCS_DIR), 'passkeys.json') : path.join(__dirname, 'passkeys.json'));
