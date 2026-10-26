@@ -323,7 +323,10 @@ function startSession(client, params) {
             return { id: c.id, name: c.name, response: { result } };
           }
           if (c.name === 'estado_pedidos') {
-            const result = pedidos.resumen(c.args && c.args.pedido);
+            let result = pedidos.resumen(c.args && c.args.pedido);
+            if (shopify.enabled()) { // además de los avisos del almacén, lo pendiente de enviar según la tienda
+              try { result += '\n' + await shopify.pendientes(); } catch (e) { result += '\n(No se pudo consultar la tienda: ' + e.message + ')'; }
+            }
             console.log('estado_pedidos("' + ((c.args && c.args.pedido) || '') + '") -> ' + result.length + ' chars');
             return { id: c.id, name: c.name, response: { result } };
           }
@@ -376,7 +379,7 @@ const pedidos = new Pedidos(path.join(path.dirname(AGENDA_FILE), 'pedidos.json')
 const PEDIDOS_TOOL = {
   functionDeclarations: [{
     name: 'estado_pedidos',
-    description: 'Devuelve el estado de los pedidos de la tienda online (los avisos que manda el almacén: preparado, enviado, incidencia, entregado, con transportista y código de seguimiento). Úsala cuando pregunten por los pedidos de la tienda, cómo va un pedido, si se ha enviado algo, o por el seguimiento de un envío.',
+    description: 'Devuelve el estado de los pedidos: los avisos del almacén (preparado, enviado, incidencia, entregado, transportista y seguimiento) y, además, qué pedidos están pendientes de enviar según la tienda. Úsala cuando pregunten por los pedidos, si hay algo para entregar o enviar, cómo va un pedido, o por el seguimiento de un envío.',
     parameters: { type: 'OBJECT', properties: {
       pedido: { type: 'STRING', description: 'Opcional: número de pedido (p. ej. "1042") o palabra del estado ("enviado", "incidencia") para filtrar. Vacío = los últimos.' },
     } },

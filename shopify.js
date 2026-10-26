@@ -96,6 +96,14 @@ async function pedido(numero) {
   return s;
 }
 
+// Pedidos de la tienda pendientes de enviar (para completar estado_pedidos).
+async function pendientes() {
+  const j = await api('/orders.json?status=open&fulfillment_status=unfulfilled&limit=50&fields=name,created_at,total_price,financial_status,cancelled_at');
+  const os = (j.orders || []).filter(o => !o.cancelled_at);
+  if (!os.length) return 'En la tienda no hay ningún pedido pendiente de enviar.';
+  return 'Pendientes de enviar según la tienda: ' + os.map(o => o.name + ' (' + String(o.created_at).slice(0, 10) + ', ' + eur(o.total_price) + ', ' + estadoPago(o) + ')').join('; ') + '.';
+}
+
 const TOOL = {
   functionDeclarations: [
     { name: 'ventas_tienda', description: 'Ventas de la tienda online entre dos fechas: número de pedidos, importe total y últimos pedidos con su estado. Úsala cuando pregunten cuánto se ha vendido, cuántos pedidos hay hoy/esta semana/este mes, o cómo va la tienda. Calcula las fechas con la fecha de hoy de tus instrucciones.',
@@ -119,4 +127,4 @@ async function llamar(nombre, args) {
   throw new Error('Función desconocida');
 }
 
-module.exports = { enabled, llamar, TOOL, RULES };
+module.exports = { enabled, llamar, pendientes, TOOL, RULES };
