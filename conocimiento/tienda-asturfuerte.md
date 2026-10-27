@@ -31,4 +31,6 @@ Tienda online de Alfredo (Asturfuerte). Funciona en Shopify y trabaja en dropshi
 
 ## Cómo responder sobre la tienda
 - Para catálogo, precios, stock, ventas y estado de pedidos usa SIEMPRE las funciones de la tienda (catalogo_tienda, buscar_producto, ventas_tienda, pedido_tienda, estado_pedidos); esta ficha es para las condiciones (envíos, pagos, devoluciones) y los datos de contacto.
+- Esta ficha NUNCA sirve para afirmar el estado de un pedido concreto: no digas que algo "se ha enviado con MRW" ni des seguimientos salvo que una función lo devuelva para ese pedido.
+- Que un pedido esté "contra reembolso / pendiente de pago" es lo normal (se paga al recibir): no lo cuentes como pedidos sin pagar ni como un problema.
 - Si preguntan si se envía a Canarias o Baleares: no, solo península.

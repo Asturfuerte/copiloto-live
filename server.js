@@ -6,6 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const tls = require('tls');
 
+const VERSION = '2026-10-27a'; // se cambia en cada entrega para comprobar en /salud qué versión está desplegada
 const PORT = process.env.PORT || 3000;
 const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
 const ACCESS_PIN = process.env.ACCESS_PIN || '';
@@ -264,7 +265,7 @@ function startSession(client, params) {
         responseModalities: ['AUDIO'],
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } }, languageCode: 'es-ES' },
       },
-      systemInstruction: { parts: [{ text: PERSONA[modo] + tratoRules() + instruccionesRules() + agendaRules() + agenda.resumenParaSesion() + PEDIDOS_RULES + (shopify.enabled() ? shopify.RULES : '') + docsRules() + (KNOWLEDGE ? KNOWLEDGE_RULES + KNOWLEDGE : '') }] },
+      systemInstruction: { parts: [{ text: PERSONA[modo] + tratoRules() + instruccionesRules() + agendaRules() + agenda.resumenParaSesion(PREFS.citasAlEmpezar) + PEDIDOS_RULES + (shopify.enabled() ? shopify.RULES : '') + docsRules() + (KNOWLEDGE ? KNOWLEDGE_RULES + KNOWLEDGE : '') }] },
       realtimeInputConfig: { automaticActivityDetection: { disabled: false, endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH', silenceDurationMs: 500 } },
       inputAudioTranscription: {},
       outputAudioTranscription: {},
@@ -534,7 +535,7 @@ const server = http.createServer((req, res) => {
     const f = path.join(PUBLIC_DIR, req.url.slice(1));
     if (fs.existsSync(f)) { res.writeHead(200, { 'content-type': MIME[path.extname(f)] || 'application/octet-stream', 'cache-control': 'public, max-age=86400' }); return res.end(fs.readFileSync(f)); }
   }
-  if (req.method === 'GET' && req.url === '/salud') return send(res, 200, { ok: true, clave: !!GEMINI_KEY, modelo: LIVE_MODEL, voz: LIVE_VOICE, busqueda: ENABLE_SEARCH, nombre: AGENT_NAME, tienda: shopify.enabled(), conocimiento_chars: KNOWLEDGE.length, busqueda_semantica: !!DOCS.embedded, agenda_pendientes: agenda.pendientes().length, documentos: DOCS.docs.map(d => ({ nombre: d.name, fragmentos: d.chunks })) });
+  if (req.method === 'GET' && req.url === '/salud') return send(res, 200, { ok: true, version: VERSION, clave: !!GEMINI_KEY, modelo: LIVE_MODEL, voz: LIVE_VOICE, busqueda: ENABLE_SEARCH, nombre: AGENT_NAME, tienda: shopify.enabled(), citas_al_empezar: PREFS.citasAlEmpezar, instrucciones: (PREFS.instrucciones || []).length, conocimiento_chars: KNOWLEDGE.length, busqueda_semantica: !!DOCS.embedded, agenda_pendientes: agenda.pendientes().length, documentos: DOCS.docs.map(d => ({ nombre: d.name, fragmentos: d.chunks })) });
 
   const u = new URL(req.url, 'http://x');
 

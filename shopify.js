@@ -47,14 +47,16 @@ async function api(ruta) {
 const eur = x => (Math.round(Number(x || 0) * 100) / 100).toLocaleString('es-ES', { minimumFractionDigits: 2 }) + ' €';
 const PAGO = { paid: 'pagado', pending: 'pendiente de pago', partially_paid: 'pago parcial', refunded: 'reembolsado', partially_refunded: 'reembolso parcial', voided: 'anulado', authorized: 'autorizado' };
 const ENVIO = { fulfilled: 'enviado', partial: 'envío parcial', restocked: 'devuelto a stock' };
-const estadoPago = o => PAGO[o.financial_status] || o.financial_status || '';
+// Contra reembolso: el pedido figura "pending" hasta que el cliente paga al repartidor; es lo normal, no una incidencia.
+const esCOD = o => /cod|cash|contra/i.test(((o.payment_gateway_names || []).join(' ') + ' ' + (o.gateway || '')));
+const estadoPago = o => (o.financial_status === 'pending' && esCOD(o)) ? 'contra reembolso (se paga a la entrega, es lo normal)' : (PAGO[o.financial_status] || o.financial_status || '');
 const estadoEnvio = o => ENVIO[o.fulfillment_status] || (o.fulfillment_status ? o.fulfillment_status : 'sin enviar');
 
 // Ventas entre dos fechas (AAAA-MM-DD, incluidas). Devuelve texto para la voz.
 async function ventas(desde, hasta) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(desde || '')) throw new Error('Falta la fecha "desde" (AAAA-MM-DD)');
   const h = /^\d{4}-\d{2}-\d{2}$/.test(hasta || '') ? hasta : desde;
-  const j = await api('/orders.json?status=any&limit=250&created_at_min=' + desde + 'T00:00:00Z&created_at_max=' + h + 'T23:59:59Z&fields=name,total_price,created_at,financial_status,fulfillment_status,cancelled_at');
+  const j = await api('/orders.json?status=any&limit=250&created_at_min=' + desde + 'T00:00:00Z&created_at_max=' + h + 'T23:59:59Z&fields=name,total_price,created_at,financial_status,fulfillment_status,cancelled_at,payment_gateway_names,gateway');
   const todos = j.orders || [];
   const pedidos = todos.filter(o => !o.cancelled_at);
   const cancelados = todos.length - pedidos.length;
@@ -92,7 +94,7 @@ async function producto(nombre) {
 async function pedido(numero) {
   const n = String(numero || '').replace(/[#º\s]/g, '');
   if (!n) throw new Error('Falta el número de pedido');
-  const j = await api('/orders.json?status=any&name=%23' + encodeURIComponent(n) + '&fields=name,created_at,total_price,financial_status,fulfillment_status,cancelled_at,fulfillments');
+  const j = await api('/orders.json?status=any&name=%23' + encodeURIComponent(n) + '&fields=name,created_at,total_price,financial_status,fulfillment_status,cancelled_at,fulfillments,payment_gateway_names,gateway');
   const o = (j.orders || [])[0];
   if (!o) return 'No encuentro el pedido ' + numero + ' en la tienda.';
   let s = 'Pedido ' + o.name + ' (' + String(o.created_at).slice(0, 10) + '): ' + eur(o.total_price) + ', ' + estadoPago(o) + ', ' + (o.cancelled_at ? 'CANCELADO' : estadoEnvio(o)) + '.';
@@ -120,7 +122,7 @@ async function catalogo() {
 
 // Pedidos de la tienda pendientes de enviar (para completar estado_pedidos).
 async function pendientes() {
-  const j = await api('/orders.json?status=open&fulfillment_status=unfulfilled&limit=50&fields=name,created_at,total_price,financial_status,cancelled_at');
+  const j = await api('/orders.json?status=open&fulfillment_status=unfulfilled&limit=50&fields=name,created_at,total_price,financial_status,cancelled_at,payment_gateway_names,gateway');
   const os = (j.orders || []).filter(o => !o.cancelled_at);
   if (!os.length) return 'En la tienda no hay ningún pedido pendiente de enviar.';
   return 'Pendientes de enviar según la tienda: ' + os.map(o => o.name + ' (' + String(o.created_at).slice(0, 10) + ', ' + eur(o.total_price) + ', ' + estadoPago(o) + ')').join('; ') + '.';
@@ -141,7 +143,8 @@ const TOOL = {
 const RULES = `
 
 === TIENDA ONLINE (Shopify) ===
-Tienes acceso directo a la tienda con ventas_tienda (ventas y pedidos entre fechas), buscar_producto (precio y stock de un producto), catalogo_tienda (cuántos productos hay y cuáles están activos) y pedido_tienda (estado de un pedido en la tienda). Para "¿cómo van los pedidos?" en general usa estado_pedidos (avisos del almacén); para cifras de ventas, stock o un pedido concreto usa estas. Llama a la función antes de responder y di las cifras en lenguaje natural, sin inventar nada.`;
+Tienes acceso directo a la tienda con ventas_tienda (ventas y pedidos entre fechas), buscar_producto (precio y stock de un producto), catalogo_tienda (cuántos productos hay y cuáles están activos) y pedido_tienda (estado de un pedido en la tienda). Para "¿cómo van los pedidos?" en general usa estado_pedidos (avisos del almacén); para cifras de ventas, stock o un pedido concreto usa estas. Llama a la función antes de responder y di las cifras en lenguaje natural, sin inventar nada.
+OJO: la tienda vende contra reembolso, así que "contra reembolso (se paga a la entrega)" es el estado NORMAL de un pedido en marcha; no lo presentes como pedidos "sin pagar" ni como un problema. Y NUNCA digas que un pedido se ha enviado, ni menciones transportista o seguimiento de un pedido concreto, si la función no lo devuelve para ese pedido: que MRW sea el transportista habitual no significa que un pedido esté enviado.`;
 
 async function llamar(nombre, args) {
   const a = args || {};

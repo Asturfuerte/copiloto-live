@@ -58,13 +58,18 @@ class Recordatorios {
     return s;
   }
   // Texto para las instrucciones del sistema al empezar la sesión
-  resumenParaSesion() {
+  // recitar=true: se pide mencionar las citas próximas al empezar. recitar=false: la lista es solo
+  // referencia para responder preguntas y queda PROHIBIDO sacarla sin que pregunten.
+  resumenParaSesion(recitar) {
     const n = ahora(); const items = this.pendientes();
     let out = `\n\n=== FECHA Y AGENDA ===\nAhora mismo es ${n.texto} (hora de Canarias). Usa esta fecha para interpretar "mañana", "el jueves que viene", "dentro de dos semanas", etc.\n`;
     if (!items.length) return out + 'La agenda está vacía.\n';
     const proximas = items.filter(it => it.fecha && diasEntre(n.ymd, it.fecha) <= 7);
     const resto = items.filter(it => !proximas.includes(it));
-    if (proximas.length) out += 'Citas vencidas o de los próximos 7 días (menciónalas brevemente UNA vez al empezar, cuando Alfredo te salude o te hable por primera vez; no las repitas después salvo que pregunte):\n' + proximas.map(it => '- ' + this.describe(it, n.ymd)).join('\n') + '\n';
+    const cabecera = recitar
+      ? 'Citas vencidas o de los próximos 7 días (menciónalas brevemente UNA vez al empezar, cuando el usuario te salude o te hable por primera vez; no las repitas después salvo que pregunte):\n'
+      : 'Citas vencidas o de los próximos 7 días (SOLO para consultarlas si el usuario pregunta por su agenda; NO las menciones por tu cuenta, ni al saludar ni en ningún otro momento — él ya recibe su aviso diario):\n';
+    if (proximas.length) out += cabecera + proximas.map(it => '- ' + this.describe(it, n.ymd)).join('\n') + '\n';
     if (resto.length) out += `Otras pendientes (${resto.length}): ` + resto.slice(0, 15).map(it => this.describe(it, n.ymd)).join(' | ') + (resto.length > 15 ? ' | …' : '') + '\n';
     return out;
   }
