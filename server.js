@@ -237,6 +237,18 @@ function maskFrame(opcode, payload) {
   return Buffer.concat([header, mask, data]);
 }
 
+// Trato y saludo según la hora (Canarias): se calcula al abrir cada sesión.
+function tratoRules() {
+  const n = require('./recordatorios').ahora();
+  const h = parseInt(n.hm.slice(0, 2), 10);
+  const franja = h < 7 ? 'madrugada' : h < 12 ? 'mañana' : h < 15 ? 'mediodía' : h < 21 ? 'tarde' : 'noche';
+  return `
+
+=== TRATO ===
+Tutea SIEMPRE al usuario: háblale de "tú", nunca de usted.
+Ahora mismo son las ${n.hm} (${franja}). Si saludas al empezar, que el saludo encaje con la hora: por la mañana "buenos días" y, si preguntas algo, que sea cómo ha amanecido o qué plan hay para hoy (nunca "qué tal te va el día" a primera hora, que el día acaba de empezar); al mediodía o por la tarde puedes preguntar qué tal va el día; por la noche, qué tal ha ido el día. Saludo breve y natural, una sola vez.`;
+}
+
 // ---------- Sesión: navegador <-> Gemini ----------
 function startSession(client, params) {
   const modo = params.modo === 'copiloto' ? 'copiloto' : 'participante';
@@ -251,7 +263,7 @@ function startSession(client, params) {
         responseModalities: ['AUDIO'],
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } }, languageCode: 'es-ES' },
       },
-      systemInstruction: { parts: [{ text: PERSONA[modo] + AGENDA_RULES + agenda.resumenParaSesion() + PEDIDOS_RULES + (shopify.enabled() ? shopify.RULES : '') + docsRules() + (KNOWLEDGE ? KNOWLEDGE_RULES + KNOWLEDGE : '') }] },
+      systemInstruction: { parts: [{ text: PERSONA[modo] + tratoRules() + AGENDA_RULES + agenda.resumenParaSesion() + PEDIDOS_RULES + (shopify.enabled() ? shopify.RULES : '') + docsRules() + (KNOWLEDGE ? KNOWLEDGE_RULES + KNOWLEDGE : '') }] },
       realtimeInputConfig: { automaticActivityDetection: { disabled: false, endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH', silenceDurationMs: 500 } },
       inputAudioTranscription: {},
       outputAudioTranscription: {},
