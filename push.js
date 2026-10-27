@@ -26,12 +26,13 @@ class Push {
     this.subs.push({ sub, nombre: String(nombre || 'dispositivo').slice(0, 80), fecha: new Date().toISOString() });
     this.save(); return this.subs.length;
   }
-  // Envía a todos los dispositivos; retira en silencio las suscripciones caducadas (404/410)
-  async send(titulo, cuerpo) {
+  // Envía a todos los dispositivos; retira en silencio las suscripciones caducadas (404/410).
+  // url (opcional): qué abrir al tocar la notificación (por defecto, la app).
+  async send(titulo, cuerpo, url) {
     if (!this.ok) return 0;
     let n = 0;
     for (const s of [...this.subs]) {
-      try { await webpush.sendNotification(s.sub, JSON.stringify({ titulo, cuerpo }), { TTL: 86400 }); n++; }
+      try { await webpush.sendNotification(s.sub, JSON.stringify({ titulo, cuerpo, url }), { TTL: 86400 }); n++; }
       catch (e) {
         if (e.statusCode === 404 || e.statusCode === 410) { this.subs = this.subs.filter(x => x !== s); this.save(); console.log('Suscripción push caducada retirada (' + s.nombre + ')'); }
         else console.log('Push fallido (' + s.nombre + '): ' + (e.statusCode || e.message));

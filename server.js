@@ -538,8 +538,8 @@ const server = http.createServer((req, res) => {
       try {
         const { ped, ev } = pedidos.evento(body);
         console.log('Webhook Coinnecta: pedido ' + pedidos.nombre(ped) + ' -> ' + ev.estado + (ev.seguimiento ? ' (' + ev.seguimiento + ')' : ''));
-        let cuerpo = ev.estado + (ev.detalles ? ' · ' + ev.detalles : '') + (ped.transportista ? ' · ' + ped.transportista : '') + (ev.seguimiento ? '\nSeguimiento: ' + ev.seguimiento : '');
-        push.send('🛒 Pedido ' + pedidos.nombre(ped), cuerpo).then(n => { if (n) console.log('Aviso de pedido enviado a ' + n + ' dispositivo(s)'); }).catch(() => {});
+        let cuerpo = ev.estado + (ev.detalles ? ' · ' + ev.detalles : '') + (ped.transportista ? ' · ' + ped.transportista : '') + (ev.seguimiento ? '\nSeguimiento: ' + ev.seguimiento : '') + '\nAlmacén nº ' + ped.order_id + ' · toca para abrir el panel';
+        push.send('🛒 Pedido ' + pedidos.nombre(ped), cuerpo, 'https://almacen.coinnecta.es/app/orders').then(n => { if (n) console.log('Aviso de pedido enviado a ' + n + ' dispositivo(s)'); }).catch(() => {});
         send(res, 200, { ok: true });
       } catch (err) { send(res, 400, { error: err.message }); }
     });
