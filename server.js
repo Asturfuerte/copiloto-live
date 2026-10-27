@@ -264,7 +264,7 @@ function startSession(client, params) {
         responseModalities: ['AUDIO'],
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } }, languageCode: 'es-ES' },
       },
-      systemInstruction: { parts: [{ text: PERSONA[modo] + tratoRules() + AGENDA_RULES + agenda.resumenParaSesion() + PEDIDOS_RULES + (shopify.enabled() ? shopify.RULES : '') + docsRules() + (KNOWLEDGE ? KNOWLEDGE_RULES + KNOWLEDGE : '') }] },
+      systemInstruction: { parts: [{ text: PERSONA[modo] + tratoRules() + agendaRules() + agenda.resumenParaSesion() + PEDIDOS_RULES + (shopify.enabled() ? shopify.RULES : '') + docsRules() + (KNOWLEDGE ? KNOWLEDGE_RULES + KNOWLEDGE : '') }] },
       realtimeInputConfig: { automaticActivityDetection: { disabled: false, endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH', silenceDurationMs: 500 } },
       inputAudioTranscription: {},
       outputAudioTranscription: {},
@@ -306,7 +306,7 @@ function startSession(client, params) {
             console.log('consultar_documentos("' + pregunta + '") -> ' + result.length + ' chars en ' + (Date.now() - t0) + ' ms' + (DOCS.embedded ? '' : ' (sin embeddings)'));
             return { id: c.id, name: c.name, response: { result } };
           }
-          if (c.name === 'guardar_recordatorio' || c.name === 'listar_recordatorios' || c.name === 'completar_recordatorio' || c.name === 'modificar_recordatorio') {
+          if (c.name === 'guardar_recordatorio' || c.name === 'listar_recordatorios' || c.name === 'completar_recordatorio' || c.name === 'modificar_recordatorio' || c.name === 'cambiar_hora_aviso' || c.name === 'configurar_recordatorio_inicio') {
             const a = c.args || {}; let result;
             try {
               if (c.name === 'guardar_recordatorio') { const it = agenda.add({ texto: a.texto, fecha: a.fecha, hora: a.hora, lugar: a.lugar, tipo: a.tipo }); result = 'Guardado: ' + agenda.describe(it, require('./recordatorios').ahora().ymd); sendText(client, { tipo: 'agenda', accion: 'nuevo', item: it }); }
@@ -322,6 +322,10 @@ function startSession(client, params) {
                   push.save();
                   result = 'Hecho: el aviso diario de la agenda se enviará a las ' + a.hora + '.';
                 }
+              }
+              else if (c.name === 'configurar_recordatorio_inicio') {
+                PREFS.citasAlEmpezar = !!a.activar; savePrefs();
+                result = a.activar ? 'Hecho y guardado: volveré a repasar las citas al empezar cada sesión.' : 'Hecho y guardado para siempre: no volveré a recitar las citas al empezar; seguirás recibiendo tu aviso diario a las ' + horaAviso() + '.';
               }
               else { const it = agenda.update(String(a.id || ''), { texto: a.texto, fecha: a.fecha, hora: a.hora, lugar: a.lugar }); result = 'Modificado: ' + agenda.describe(it, require('./recordatorios').ahora().ymd); sendText(client, { tipo: 'agenda', accion: 'cambio', item: it }); }
             } catch (e) { result = 'Error: ' + e.message; }
@@ -382,6 +386,12 @@ try {
 } catch (e) {}
 const agenda = new Recordatorios(AGENDA_FILE);
 
+// ---------- Preferencias persistentes (las cambia el usuario de viva voz y sobreviven a cierres y redespliegues) ----------
+const PREFS_FILE = process.env.PREFS_FILE || path.join(path.dirname(AGENDA_FILE), 'preferencias.json');
+let PREFS = { citasAlEmpezar: false }; // por defecto NO se recitan las citas al abrir sesión (ya existe el aviso diario)
+try { PREFS = Object.assign(PREFS, JSON.parse(fs.readFileSync(PREFS_FILE, 'utf8'))); } catch (e) {}
+function savePrefs() { try { fs.writeFileSync(PREFS_FILE, JSON.stringify(PREFS, null, 1)); } catch (e) { console.log('No se pudieron guardar las preferencias: ' + e.message); } }
+
 // ---------- Tienda Shopify (ventas, stock, pedidos) ----------
 const shopify = require('./shopify');
 if (shopify.enabled()) console.log('Tienda Shopify conectada: ' + process.env.SHOPIFY_SHOP);
@@ -441,12 +451,19 @@ const AGENDA_TOOL = {
       parameters: { type: 'OBJECT', properties: { id: { type: 'STRING' }, texto: { type: 'STRING' }, fecha: { type: 'STRING', description: 'AAAA-MM-DD' }, hora: { type: 'STRING', description: 'HH:MM' }, lugar: { type: 'STRING' } }, required: ['id'] } },
     { name: 'cambiar_hora_aviso', description: 'Cambia la hora a la que cada día se envía el aviso con las citas (notificación al móvil y al PC). Úsala cuando pidan que avise a otra hora ("avísame a las 8", "manda el aviso por la tarde"). Sin el parámetro hora, devuelve a qué hora está puesto ahora.',
       parameters: { type: 'OBJECT', properties: { hora: { type: 'STRING', description: 'HH:MM en 24 horas (p. ej. "08:00", "20:30"). Vacío para consultar.' } } } },
+    { name: 'configurar_recordatorio_inicio', description: 'Activa o desactiva PARA SIEMPRE (queda guardado para todas las sesiones futuras) que al empezar cada sesión se reciten las citas próximas. Úsala en cuanto el usuario pida que no le recuerdes las citas al abrir ("no me las recuerdes cada vez", "deja de repetirme la agenda") o que vuelvas a hacerlo.',
+      parameters: { type: 'OBJECT', properties: { activar: { type: 'BOOLEAN', description: 'false = no recitar citas al empezar; true = volver a recitarlas.' } }, required: ['activar'] } },
   ],
 };
-const AGENDA_RULES = `
+function agendaRules() {
+  return `
 
 === AGENDA ===
-Tienes una agenda persistente con las funciones guardar_recordatorio, listar_recordatorios, completar_recordatorio, modificar_recordatorio y cambiar_hora_aviso. Cada día se envía un aviso con las citas que tocan (notificación al móvil y al PC); si el usuario pide que se le avise a otra hora o pregunta a qué hora se le avisa, usa cambiar_hora_aviso. Si el usuario menciona una cita, un plazo, algo que tiene que hacer o algo que quiere recordar, guárdalo (confirma en una frase: "Apuntado: dentista, jueves 23 a las 10"). Para fechas relativas usa la fecha de hoy. Si te pregunta qué tiene pendiente o qué hay esta semana, lista. Cuando diga que algo ya está hecho o se cancela, complétalo. Al empezar la sesión, si hay citas vencidas, de hoy o de los próximos días, recuérdaselas una vez, brevemente.`;
+Tienes una agenda persistente con las funciones guardar_recordatorio, listar_recordatorios, completar_recordatorio, modificar_recordatorio, cambiar_hora_aviso y configurar_recordatorio_inicio. Cada día se envía un aviso con las citas que tocan (notificación al móvil y al PC); si el usuario pide que se le avise a otra hora o pregunta a qué hora se le avisa, usa cambiar_hora_aviso. Si el usuario menciona una cita, un plazo, algo que tiene que hacer o algo que quiere recordar, guárdalo (confirma en una frase: "Apuntado: dentista, jueves 23 a las 10"). Para fechas relativas usa la fecha de hoy. Si te pregunta qué tiene pendiente o qué hay esta semana, lista. Cuando diga que algo ya está hecho o se cancela, complétalo.
+` + (PREFS.citasAlEmpezar
+    ? 'Al empezar la sesión, si hay citas vencidas, de hoy o de los próximos días, recuérdaselas una vez, brevemente. Si el usuario te pide que dejes de recordárselas al empezar, usa configurar_recordatorio_inicio con activar=false: así queda guardado para todas las sesiones.'
+    : 'IMPORTANTE: al empezar la sesión NO recites la agenda ni las citas pendientes, ni las menciones sin que te pregunten; el usuario ya recibe su aviso diario a la hora que eligió. Habla de la agenda solo si el usuario la saca o te pregunta. Si alguna vez te pidiera recuperar el repaso de citas al empezar, usa configurar_recordatorio_inicio con activar=true.');
+}
 
 const { Passkeys } = require('./passkeys');
 const PASSKEYS_FILE = process.env.PASSKEYS_FILE || (path.resolve(DOCS_DIR) !== path.resolve(BUNDLED_DOCS) ? path.join(path.dirname(DOCS_DIR), 'passkeys.json') : path.join(__dirname, 'passkeys.json'));
