@@ -96,6 +96,20 @@ async function pedido(numero) {
   return s;
 }
 
+// Resumen del catálogo: cuántos productos hay y cuáles están activos.
+async function catalogo() {
+  const j = await api('/products.json?limit=250&fields=title,status,variants');
+  const ps = j.products || [];
+  if (!ps.length) return 'La tienda no tiene todavía ningún producto.';
+  const act = ps.filter(p => p.status === 'active'), borr = ps.filter(p => p.status === 'draft'), arch = ps.filter(p => p.status === 'archived');
+  const sinStock = act.filter(p => (p.variants || []).every(v => v.inventory_quantity != null && v.inventory_quantity <= 0));
+  let s = 'Catálogo de la tienda: ' + ps.length + ' producto' + (ps.length > 1 ? 's' : '') + ' — ' + act.length + ' activos, ' + borr.length + ' en borrador, ' + arch.length + ' archivados.';
+  if (sinStock.length) s += ' OJO: ' + sinStock.length + ' activo' + (sinStock.length > 1 ? 's' : '') + ' sin stock (' + sinStock.slice(0, 10).map(p => p.title).join('; ') + ').';
+  if (act.length) s += '\nActivos: ' + act.slice(0, 40).map(p => p.title).join('; ') + (act.length > 40 ? ' (y ' + (act.length - 40) + ' más)' : '');
+  if (ps.length === 250) s += '\n(Hay más de 250 productos; el recuento es parcial.)';
+  return s;
+}
+
 // Pedidos de la tienda pendientes de enviar (para completar estado_pedidos).
 async function pendientes() {
   const j = await api('/orders.json?status=open&fulfillment_status=unfulfilled&limit=50&fields=name,created_at,total_price,financial_status,cancelled_at');
@@ -110,6 +124,8 @@ const TOOL = {
       parameters: { type: 'OBJECT', properties: { desde: { type: 'STRING', description: 'AAAA-MM-DD' }, hasta: { type: 'STRING', description: 'AAAA-MM-DD (opcional; sin él, solo el día "desde")' } }, required: ['desde'] } },
     { name: 'buscar_producto', description: 'Busca un producto de la tienda por nombre y devuelve su precio y el stock de cada variante (talla, color). Úsala cuando pregunten por el precio o el stock de un producto.',
       parameters: { type: 'OBJECT', properties: { nombre: { type: 'STRING', description: 'Nombre o parte del nombre del producto.' } }, required: ['nombre'] } },
+    { name: 'catalogo_tienda', description: 'Resumen del catálogo de la tienda: cuántos productos hay (activos, en borrador, archivados), cuáles son los activos y si alguno está sin stock. Úsala cuando pregunten cuántos productos o artículos tiene la tienda, qué se vende, o qué hay publicado.',
+      parameters: { type: 'OBJECT', properties: {} } },
     { name: 'pedido_tienda', description: 'Estado de un pedido concreto de la tienda por su número: pago, envío y seguimiento. Para el aviso del almacén usa estado_pedidos; esta da la vista de la tienda (Shopify).',
       parameters: { type: 'OBJECT', properties: { numero: { type: 'STRING', description: 'Número del pedido, p. ej. "1042".' } }, required: ['numero'] } },
   ],
@@ -117,12 +133,13 @@ const TOOL = {
 const RULES = `
 
 === TIENDA ONLINE (Shopify) ===
-Tienes acceso directo a la tienda con ventas_tienda (ventas y pedidos entre fechas), buscar_producto (precio y stock) y pedido_tienda (estado de un pedido en la tienda). Para "¿cómo van los pedidos?" en general usa estado_pedidos (avisos del almacén); para cifras de ventas, stock o un pedido concreto usa estas. Llama a la función antes de responder y di las cifras en lenguaje natural, sin inventar nada.`;
+Tienes acceso directo a la tienda con ventas_tienda (ventas y pedidos entre fechas), buscar_producto (precio y stock de un producto), catalogo_tienda (cuántos productos hay y cuáles están activos) y pedido_tienda (estado de un pedido en la tienda). Para "¿cómo van los pedidos?" en general usa estado_pedidos (avisos del almacén); para cifras de ventas, stock o un pedido concreto usa estas. Llama a la función antes de responder y di las cifras en lenguaje natural, sin inventar nada.`;
 
 async function llamar(nombre, args) {
   const a = args || {};
   if (nombre === 'ventas_tienda') return ventas(a.desde, a.hasta);
   if (nombre === 'buscar_producto') return producto(a.nombre);
+  if (nombre === 'catalogo_tienda') return catalogo();
   if (nombre === 'pedido_tienda') return pedido(a.numero);
   throw new Error('Función desconocida');
 }

@@ -328,8 +328,8 @@ function startSession(client, params) {
             console.log(c.name + '(' + JSON.stringify(a) + ') -> ' + result.slice(0, 80));
             return { id: c.id, name: c.name, response: { result } };
           }
-          if (c.name === 'ventas_tienda' || c.name === 'buscar_producto' || c.name === 'pedido_tienda') {
-            sendText(client, { tipo: 'aviso', texto: 'Consultando tienda: ' + ({ ventas_tienda: 'ventas', buscar_producto: 'producto', pedido_tienda: 'pedido' })[c.name] });
+          if (c.name === 'ventas_tienda' || c.name === 'buscar_producto' || c.name === 'pedido_tienda' || c.name === 'catalogo_tienda') {
+            sendText(client, { tipo: 'aviso', texto: 'Consultando tienda: ' + ({ ventas_tienda: 'ventas', buscar_producto: 'producto', pedido_tienda: 'pedido', catalogo_tienda: 'catálogo' })[c.name] });
             let result;
             try { result = await shopify.llamar(c.name, c.args); } catch (e) { result = 'No se pudo consultar la tienda: ' + e.message; }
             console.log(c.name + '(' + JSON.stringify(c.args || {}) + ') -> ' + String(result).slice(0, 80));
