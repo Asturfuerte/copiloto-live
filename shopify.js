@@ -69,6 +69,11 @@ async function ventas(desde, hasta) {
   return s;
 }
 
+// El stock solo cuenta si la tienda lo gestiona: en dropshipping los productos van sin
+// seguimiento (inventory_management vacío) y Shopify marca 0, pero NO están agotados.
+const stockGestionado = v => !!v.inventory_management;
+const stockTexto = v => stockGestionado(v) ? ', stock ' + v.inventory_quantity : ', stock a cargo del almacén';
+
 // Busca productos por nombre y devuelve precio y stock por variante.
 async function producto(nombre) {
   const q = String(nombre || '').trim().toLowerCase();
@@ -78,7 +83,7 @@ async function producto(nombre) {
   const hits = (j.products || []).filter(p => norm(p.title).includes(norm(q)));
   if (!hits.length) return 'No encuentro ningún producto que se llame "' + nombre + '" en la tienda.';
   return hits.slice(0, 5).map(p => {
-    const vs = (p.variants || []).map(v => (v.title && v.title !== 'Default Title' ? v.title + ': ' : '') + eur(v.price) + (v.inventory_quantity == null ? '' : ', stock ' + v.inventory_quantity)).join(' · ');
+    const vs = (p.variants || []).map(v => (v.title && v.title !== 'Default Title' ? v.title + ': ' : '') + eur(v.price) + stockTexto(v)).join(' · ');
     return p.title + (p.status !== 'active' ? ' [' + p.status + ']' : '') + ' — ' + vs;
   }).join('\n') + (hits.length > 5 ? '\n(y ' + (hits.length - 5) + ' más)' : '');
 }
@@ -102,9 +107,12 @@ async function catalogo() {
   const ps = j.products || [];
   if (!ps.length) return 'La tienda no tiene todavía ningún producto.';
   const act = ps.filter(p => p.status === 'active'), borr = ps.filter(p => p.status === 'draft'), arch = ps.filter(p => p.status === 'archived');
-  const sinStock = act.filter(p => (p.variants || []).every(v => v.inventory_quantity != null && v.inventory_quantity <= 0));
+  // Solo es "sin stock" si la tienda gestiona el inventario del producto y está a cero; sin seguimiento = lo lleva el almacén.
+  const sinStock = act.filter(p => (p.variants || []).length && (p.variants || []).every(v => stockGestionado(v) && v.inventory_quantity <= 0));
+  const sinSeguimiento = act.filter(p => (p.variants || []).every(v => !stockGestionado(v)));
   let s = 'Catálogo de la tienda: ' + ps.length + ' producto' + (ps.length > 1 ? 's' : '') + ' — ' + act.length + ' activos, ' + borr.length + ' en borrador, ' + arch.length + ' archivados.';
   if (sinStock.length) s += ' OJO: ' + sinStock.length + ' activo' + (sinStock.length > 1 ? 's' : '') + ' sin stock (' + sinStock.slice(0, 10).map(p => p.title).join('; ') + ').';
+  if (sinSeguimiento.length === act.length && act.length) s += ' El stock no se controla en la tienda: lo gestiona el almacén del proveedor, como corresponde al dropshipping.';
   if (act.length) s += '\nActivos: ' + act.slice(0, 40).map(p => p.title).join('; ') + (act.length > 40 ? ' (y ' + (act.length - 40) + ' más)' : '');
   if (ps.length === 250) s += '\n(Hay más de 250 productos; el recuento es parcial.)';
   return s;
