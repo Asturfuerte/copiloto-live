@@ -6,7 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const tls = require('tls');
 
-const VERSION = '2026-10-27b'; // se cambia en cada entrega para comprobar en /salud qué versión está desplegada
+const VERSION = '2026-10-27c'; // se cambia en cada entrega para comprobar en /salud qué versión está desplegada
 const PORT = process.env.PORT || 3000;
 const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
 const ACCESS_PIN = process.env.ACCESS_PIN || '';
@@ -357,6 +357,7 @@ function startSession(client, params) {
             return { id: c.id, name: c.name, response: { result } };
           }
           if (c.name === 'estado_pedidos') {
+            if (shopify.enabled()) { try { await pedidos.resolverNombres(id => shopify.nombrePedido(id)); } catch (e2) {} } // sana avisos antiguos guardados con el id interno
             let result = pedidos.resumen(c.args && c.args.pedido);
             if (shopify.enabled()) { // además de los avisos del almacén, lo pendiente de enviar según la tienda
               const enAlmacen = pedidos.lista().map(x => x.shopify).filter(Boolean); // de estos ya informa el almacén: no repetirlos como "pendientes"
@@ -597,9 +598,13 @@ const server = http.createServer((req, res) => {
   if (u.pathname === '/webhook/coinnecta') {
     if (req.method !== 'POST') return send(res, 405, { error: 'Método no permitido' });
     if ((u.searchParams.get('clave') || '') !== pedidos.data.clave) return send(res, 401, { error: 'Clave incorrecta' });
-    return readJson(req, (e, body) => {
+    return readJson(req, async (e, body) => {
       if (e) return send(res, 400, { error: 'JSON' });
       try {
+        // El almacén manda el id interno largo de Shopify: lo traducimos al número visible (#1003) antes de guardar y avisar.
+        if (shopify.enabled() && body && body.shopify_order_id) {
+          try { body.shopify_name = await shopify.nombrePedido(body.shopify_order_id); } catch (e2) { console.log('No se pudo traducir el pedido de Shopify ' + body.shopify_order_id + ': ' + e2.message); }
+        }
         const { ped, ev } = pedidos.evento(body);
         console.log('Webhook Coinnecta: pedido ' + pedidos.nombre(ped) + ' -> ' + ev.estado + (ev.seguimiento ? ' (' + ev.seguimiento + ')' : ''));
         let cuerpo = ev.estado + (ev.detalles ? ' · ' + ev.detalles : '') + (ped.transportista ? ' · ' + ped.transportista : '') + (ev.seguimiento ? '\nSeguimiento: ' + ev.seguimiento : '') + '\nAlmacén nº ' + ped.order_id + ' · toca para abrir el panel';

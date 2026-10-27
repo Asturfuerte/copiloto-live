@@ -160,4 +160,11 @@ async function llamar(nombre, args) {
   throw new Error('Función desconocida');
 }
 
-module.exports = { enabled, llamar, pendientes, TOOL, RULES };
+// Traduce el id interno de Shopify (el número largo que manda el almacén en sus avisos)
+// al número de pedido que se ve en la tienda (p. ej. "1003").
+async function nombrePedido(id) {
+  const j = await api('/orders/' + encodeURIComponent(String(id)) + '.json?fields=name');
+  return j.order && j.order.name ? String(j.order.name).replace('#', '') : '';
+}
+
+module.exports = { enabled, llamar, pendientes, nombrePedido, TOOL, RULES };

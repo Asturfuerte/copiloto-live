@@ -22,6 +22,7 @@ class Pedidos {
     if (!id) throw new Error('order_id vacío');
     const ped = this.data.pedidos[id] || (this.data.pedidos[id] = { order_id: id, eventos: [] });
     if (p.shopify_order_id) ped.shopify_order_id = String(p.shopify_order_id);
+    if (p.shopify_name) ped.shopify_name = String(p.shopify_name).replace('#', ''); // número visible de la tienda (1003), traducido del id interno
     if (p.total) ped.total = String(p.total);
     if (p.shipping_company) ped.transportista = String(p.shipping_company);
     const ev = {
@@ -45,7 +46,20 @@ class Pedidos {
   }
   ultimaFecha(id) { const e = this.data.pedidos[id].eventos; return e.length ? e[e.length - 1].fecha : ''; }
 
-  nombre(ped) { return ped.shopify_order_id ? '#' + ped.shopify_order_id : 'nº ' + ped.order_id; }
+  // Nombre hablable: el número de la tienda si se conoce; si no, el número del almacén
+  // (el id interno largo de Shopify no se usa nunca de cara al usuario).
+  nombre(ped) { return ped.shopify_name ? '#' + ped.shopify_name : 'nº de almacén ' + ped.order_id; }
+
+  // Completa los nombres de tienda que falten usando un traductor (id interno -> "1003"). Guarda si cambia algo.
+  async resolverNombres(traducir) {
+    let cambiado = false;
+    for (const ped of Object.values(this.data.pedidos)) {
+      if (ped.shopify_order_id && !ped.shopify_name) {
+        try { const n = await traducir(ped.shopify_order_id); if (n) { ped.shopify_name = String(n).replace('#', ''); cambiado = true; } } catch (e) {}
+      }
+    }
+    if (cambiado) this.save();
+  }
 
   // Lista ordenada por última actualización (la más reciente primero).
   lista() {
@@ -53,7 +67,7 @@ class Pedidos {
       .sort((a, b) => (b.eventos[b.eventos.length - 1] || {}).fecha > (a.eventos[a.eventos.length - 1] || {}).fecha ? 1 : -1)
       .map(ped => {
         const ev = ped.eventos[ped.eventos.length - 1] || {};
-        return { pedido: this.nombre(ped), order_id: ped.order_id, shopify: ped.shopify_order_id || '', estado: ev.estado || '', detalles: ev.detalles || '', fecha: ev.fecha || '', transportista: ped.transportista || '', seguimiento: ev.seguimiento || '', url: ev.url || '', total: ped.total || '', eventos: ped.eventos.length };
+        return { pedido: this.nombre(ped), order_id: ped.order_id, shopify: ped.shopify_name || '', estado: ev.estado || '', detalles: ev.detalles || '', fecha: ev.fecha || '', transportista: ped.transportista || '', seguimiento: ev.seguimiento || '', url: ev.url || '', total: ped.total || '', eventos: ped.eventos.length };
       });
   }
 
