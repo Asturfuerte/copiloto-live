@@ -6,7 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const tls = require('tls');
 
-const VERSION = '2026-10-27a'; // se cambia en cada entrega para comprobar en /salud qué versión está desplegada
+const VERSION = '2026-10-27b'; // se cambia en cada entrega para comprobar en /salud qué versión está desplegada
 const PORT = process.env.PORT || 3000;
 const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
 const ACCESS_PIN = process.env.ACCESS_PIN || '';
@@ -359,7 +359,8 @@ function startSession(client, params) {
           if (c.name === 'estado_pedidos') {
             let result = pedidos.resumen(c.args && c.args.pedido);
             if (shopify.enabled()) { // además de los avisos del almacén, lo pendiente de enviar según la tienda
-              try { result += '\n' + await shopify.pendientes(); } catch (e) { result += '\n(No se pudo consultar la tienda: ' + e.message + ')'; }
+              const enAlmacen = pedidos.lista().map(x => x.shopify).filter(Boolean); // de estos ya informa el almacén: no repetirlos como "pendientes"
+              try { result += '\n' + await shopify.pendientes(enAlmacen); } catch (e) { result += '\n(No se pudo consultar la tienda: ' + e.message + ')'; }
             }
             console.log('estado_pedidos("' + ((c.args && c.args.pedido) || '') + '") -> ' + result.length + ' chars');
             return { id: c.id, name: c.name, response: { result } };
@@ -438,7 +439,9 @@ const PEDIDOS_TOOL = {
 const PEDIDOS_RULES = `
 
 === PEDIDOS DE LA TIENDA ===
-Tienes la función estado_pedidos con las últimas actualizaciones que manda el almacén sobre los pedidos de la tienda online. Si preguntan por un pedido, por los envíos o por el seguimiento de un paquete, llámala antes de responder y contesta solo con lo que devuelva. Di los estados en lenguaje natural y, si hay código de seguimiento, dilo despacio y claro.`;
+Cómo funciona el negocio (tenlo claro al responder): la tienda Shopify es el ESCAPARATE — ahí entran los pedidos, contra reembolso, así que figuran "pendientes de pago" hasta la entrega (normal). El ALMACÉN del proveedor (Coinnecta) es quien de verdad prepara y envía los pedidos al cliente; sus avisos son la fuente fiable del estado del envío.
+Tienes la función estado_pedidos, que junta las dos cosas: los avisos del almacén (confirmado, enviado, transportista, seguimiento) y lo que la tienda aún marca pendiente de enviar. Si preguntan por un pedido, por los envíos o por un seguimiento, llámala antes de responder y contesta solo con lo que devuelva.
+Al responder, CUENTA UNA SOLA HISTORIA por pedido: importe y pago según la tienda, estado del envío según el almacén. Si el almacén dice "enviado con MRW" y la tienda todavía lo marca "sin enviar", vale lo del almacén (la tienda tarda en reflejarlo); no lo presentes como contradicción ni como dos pedidos distintos. Di los estados en lenguaje natural y, si hay código de seguimiento, dilo despacio y claro.`;
 
 // ---------- Avisos push (móvil/navegador) y planificador diario ----------
 const { Push } = require('./push');

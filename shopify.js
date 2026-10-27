@@ -121,11 +121,16 @@ async function catalogo() {
 }
 
 // Pedidos de la tienda pendientes de enviar (para completar estado_pedidos).
-async function pendientes() {
+// excluir: números de pedido (sin #) de los que el almacén ya informa, para no contarlos dos veces.
+async function pendientes(excluir) {
+  const ex = new Set((excluir || []).map(x => String(x).replace('#', '')));
   const j = await api('/orders.json?status=open&fulfillment_status=unfulfilled&limit=50&fields=name,created_at,total_price,financial_status,cancelled_at,payment_gateway_names,gateway');
-  const os = (j.orders || []).filter(o => !o.cancelled_at);
-  if (!os.length) return 'En la tienda no hay ningún pedido pendiente de enviar.';
-  return 'Pendientes de enviar según la tienda: ' + os.map(o => o.name + ' (' + String(o.created_at).slice(0, 10) + ', ' + eur(o.total_price) + ', ' + estadoPago(o) + ')').join('; ') + '.';
+  const todos = (j.orders || []).filter(o => !o.cancelled_at);
+  const os = todos.filter(o => !ex.has(String(o.name || '').replace('#', '')));
+  const enAlmacen = todos.length - os.length;
+  const nota = enAlmacen ? ' (De otros ' + enAlmacen + ' ya informa el almacén más arriba: ese estado es el que vale.)' : '';
+  if (!os.length) return (todos.length ? 'La tienda no tiene más pedidos pendientes de enviar.' : 'En la tienda no hay ningún pedido pendiente de enviar.') + nota;
+  return 'Además, pendientes de enviar según la tienda (el almacén aún no ha dicho nada de estos): ' + os.map(o => o.name + ' (' + String(o.created_at).slice(0, 10) + ', ' + eur(o.total_price) + ', ' + estadoPago(o) + ')').join('; ') + '.' + nota;
 }
 
 const TOOL = {
