@@ -62,7 +62,7 @@ class Pedidos {
     const q = String(consulta || '').replace(/[#º]/g, '').trim().toLowerCase();
     let items = this.lista();
     if (q) items = items.filter(x => x.order_id.toLowerCase().includes(q) || x.shopify.toLowerCase().includes(q) || x.estado.toLowerCase().includes(q) || x.detalles.toLowerCase().includes(q));
-    if (!items.length) return q ? 'No hay ningún pedido que encaje con "' + consulta + '".' : 'No ha llegado todavía ninguna actualización de pedidos del almacén.';
+    if (!items.length) return q ? 'No hay ningún pedido que encaje con "' + consulta + '".' : 'El almacén todavía no ha mandado ningún aviso: sus avisos se activaron el 26/10/2026 y solo llegan cuando un pedido cambia de estado, así que los movimientos anteriores no constan. Los nuevos irán apareciendo aquí.';
     return items.slice(0, max || 10).map(x => {
       let s = 'Pedido ' + x.pedido + ': ' + (x.estado || 'sin estado');
       if (x.detalles) s += ' (' + x.detalles + ')';
