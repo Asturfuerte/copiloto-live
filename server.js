@@ -264,7 +264,7 @@ function startSession(client, params) {
         responseModalities: ['AUDIO'],
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } }, languageCode: 'es-ES' },
       },
-      systemInstruction: { parts: [{ text: PERSONA[modo] + tratoRules() + agendaRules() + agenda.resumenParaSesion() + PEDIDOS_RULES + (shopify.enabled() ? shopify.RULES : '') + docsRules() + (KNOWLEDGE ? KNOWLEDGE_RULES + KNOWLEDGE : '') }] },
+      systemInstruction: { parts: [{ text: PERSONA[modo] + tratoRules() + instruccionesRules() + agendaRules() + agenda.resumenParaSesion() + PEDIDOS_RULES + (shopify.enabled() ? shopify.RULES : '') + docsRules() + (KNOWLEDGE ? KNOWLEDGE_RULES + KNOWLEDGE : '') }] },
       realtimeInputConfig: { automaticActivityDetection: { disabled: false, endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH', silenceDurationMs: 500 } },
       inputAudioTranscription: {},
       outputAudioTranscription: {},
@@ -306,7 +306,7 @@ function startSession(client, params) {
             console.log('consultar_documentos("' + pregunta + '") -> ' + result.length + ' chars en ' + (Date.now() - t0) + ' ms' + (DOCS.embedded ? '' : ' (sin embeddings)'));
             return { id: c.id, name: c.name, response: { result } };
           }
-          if (c.name === 'guardar_recordatorio' || c.name === 'listar_recordatorios' || c.name === 'completar_recordatorio' || c.name === 'modificar_recordatorio' || c.name === 'cambiar_hora_aviso' || c.name === 'configurar_recordatorio_inicio') {
+          if (c.name === 'guardar_recordatorio' || c.name === 'listar_recordatorios' || c.name === 'completar_recordatorio' || c.name === 'modificar_recordatorio' || c.name === 'cambiar_hora_aviso' || c.name === 'configurar_recordatorio_inicio' || c.name === 'guardar_instruccion' || c.name === 'borrar_instruccion') {
             const a = c.args || {}; let result;
             try {
               if (c.name === 'guardar_recordatorio') { const it = agenda.add({ texto: a.texto, fecha: a.fecha, hora: a.hora, lugar: a.lugar, tipo: a.tipo }); result = 'Guardado: ' + agenda.describe(it, require('./recordatorios').ahora().ymd); sendText(client, { tipo: 'agenda', accion: 'nuevo', item: it }); }
@@ -326,6 +326,22 @@ function startSession(client, params) {
               else if (c.name === 'configurar_recordatorio_inicio') {
                 PREFS.citasAlEmpezar = !!a.activar; savePrefs();
                 result = a.activar ? 'Hecho y guardado: volveré a repasar las citas al empezar cada sesión.' : 'Hecho y guardado para siempre: no volveré a recitar las citas al empezar; seguirás recibiendo tu aviso diario a las ' + horaAviso() + '.';
+              }
+              else if (c.name === 'guardar_instruccion') {
+                const t = String(a.texto || '').trim().slice(0, 200);
+                if (!t) result = 'Dime la instrucción que quieres que guarde.';
+                else {
+                  PREFS.instrucciones = (PREFS.instrucciones || []).filter(x => x.toLowerCase() !== t.toLowerCase());
+                  PREFS.instrucciones.push(t);
+                  if (PREFS.instrucciones.length > 20) PREFS.instrucciones.shift();
+                  savePrefs();
+                  result = 'Guardada para siempre (nº ' + PREFS.instrucciones.length + '): "' + t + '". La cumpliré en todas las sesiones.';
+                }
+              }
+              else if (c.name === 'borrar_instruccion') {
+                const list = PREFS.instrucciones || []; const n = Number(a.numero);
+                if (!n || n < 1 || n > list.length) result = 'No existe la instrucción nº ' + (a.numero || '?') + '; hay ' + list.length + ' guardada(s).';
+                else { const q = list.splice(n - 1, 1)[0]; savePrefs(); result = 'Eliminada la instrucción: "' + q + '".'; }
               }
               else { const it = agenda.update(String(a.id || ''), { texto: a.texto, fecha: a.fecha, hora: a.hora, lugar: a.lugar }); result = 'Modificado: ' + agenda.describe(it, require('./recordatorios').ahora().ymd); sendText(client, { tipo: 'agenda', accion: 'cambio', item: it }); }
             } catch (e) { result = 'Error: ' + e.message; }
@@ -388,9 +404,19 @@ const agenda = new Recordatorios(AGENDA_FILE);
 
 // ---------- Preferencias persistentes (las cambia el usuario de viva voz y sobreviven a cierres y redespliegues) ----------
 const PREFS_FILE = process.env.PREFS_FILE || path.join(path.dirname(AGENDA_FILE), 'preferencias.json');
-let PREFS = { citasAlEmpezar: false }; // por defecto NO se recitan las citas al abrir sesión (ya existe el aviso diario)
+let PREFS = { citasAlEmpezar: false, instrucciones: [] }; // por defecto NO se recitan las citas al abrir sesión (ya existe el aviso diario)
 try { PREFS = Object.assign(PREFS, JSON.parse(fs.readFileSync(PREFS_FILE, 'utf8'))); } catch (e) {}
 function savePrefs() { try { fs.writeFileSync(PREFS_FILE, JSON.stringify(PREFS, null, 1)); } catch (e) { console.log('No se pudieron guardar las preferencias: ' + e.message); } }
+
+// Instrucciones permanentes que el usuario dicta de viva voz; entran en el prompt de cada sesión.
+function instruccionesRules() {
+  const list = PREFS.instrucciones || [];
+  return `
+
+=== INSTRUCCIONES PERMANENTES DEL USUARIO ===
+Cuando el usuario te dé una norma de comportamiento para el futuro ("a partir de ahora…", "siempre…", "nunca…", "deja de…", "recuerda que…"), guárdala con guardar_instruccion resumida en una frase corta e imperativa: así la cumplirás en todas las sesiones, no solo en esta. Confírmaselo en una frase ("Guardado: …"). Si te pide eliminar o cambiar una, usa borrar_instruccion con su número (y guarda la nueva si procede). No guardes peticiones puntuales de la sesión (p. ej. "repite eso"), solo normas de futuro.
+` + (list.length ? 'INSTRUCCIONES GUARDADAS — cúmplelas SIEMPRE:\n' + list.map((t, i) => (i + 1) + '. ' + t).join('\n') : 'Todavía no hay ninguna guardada.');
+}
 
 // ---------- Tienda Shopify (ventas, stock, pedidos) ----------
 const shopify = require('./shopify');
@@ -453,6 +479,10 @@ const AGENDA_TOOL = {
       parameters: { type: 'OBJECT', properties: { hora: { type: 'STRING', description: 'HH:MM en 24 horas (p. ej. "08:00", "20:30"). Vacío para consultar.' } } } },
     { name: 'configurar_recordatorio_inicio', description: 'Activa o desactiva PARA SIEMPRE (queda guardado para todas las sesiones futuras) que al empezar cada sesión se reciten las citas próximas. Úsala en cuanto el usuario pida que no le recuerdes las citas al abrir ("no me las recuerdes cada vez", "deja de repetirme la agenda") o que vuelvas a hacerlo.',
       parameters: { type: 'OBJECT', properties: { activar: { type: 'BOOLEAN', description: 'false = no recitar citas al empezar; true = volver a recitarlas.' } }, required: ['activar'] } },
+    { name: 'guardar_instruccion', description: 'Guarda PARA SIEMPRE una norma de comportamiento que el usuario te dé para el futuro ("a partir de ahora…", "siempre…", "nunca…"). Quedará fija en todas las sesiones futuras, no solo en esta.',
+      parameters: { type: 'OBJECT', properties: { texto: { type: 'STRING', description: 'La instrucción, resumida en una frase corta e imperativa (p. ej. "No proponer reuniones los domingos").' } }, required: ['texto'] } },
+    { name: 'borrar_instruccion', description: 'Elimina una de las instrucciones permanentes guardadas, por su número en la lista de tus instrucciones.',
+      parameters: { type: 'OBJECT', properties: { numero: { type: 'INTEGER', description: 'Número de la instrucción en la lista.' } }, required: ['numero'] } },
   ],
 };
 function agendaRules() {
