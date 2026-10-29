@@ -1,0 +1,104 @@
+{
+  "documentos.js": {
+    "mtime": 1793315630.320722,
+    "seen": 1793315867.89519,
+    "ast_hash": "4dd8d0963cf1b543e11cc856b8e663a0",
+    "semantic_hash": "4dd8d0963cf1b543e11cc856b8e663a0"
+  },
+  "package.json": {
+    "mtime": 1793315630.320722,
+    "seen": 1793315867.8951998,
+    "ast_hash": "6dde82b45c1e1eeee1c6d8cc824ad714",
+    "semantic_hash": "6dde82b45c1e1eeee1c6d8cc824ad714"
+  },
+  "passkeys.js": {
+    "mtime": 1793315630.320722,
+    "seen": 1793315867.8952045,
+    "ast_hash": "5d5fa307b66477abad01ae2082993e70",
+    "semantic_hash": "5d5fa307b66477abad01ae2082993e70"
+  },
+  "pedidos.js": {
+    "mtime": 1793315630.320722,
+    "seen": 1793315867.8952074,
+    "ast_hash": "cfdd4189b75165e5bdb1883dea3ab65b",
+    "semantic_hash": "cfdd4189b75165e5bdb1883dea3ab65b"
+  },
+  "public/sw.js": {
+    "mtime": 1793315630.3220778,
+    "seen": 1793315867.8952098,
+    "ast_hash": "f84b23a87554b7d9279f00798ee14f2f",
+    "semantic_hash": "f84b23a87554b7d9279f00798ee14f2f"
+  },
+  "push.js": {
+    "mtime": 1793315630.3220778,
+    "seen": 1793315867.8952117,
+    "ast_hash": "ef8c337cb9715d1321a142c12fec4c7c",
+    "semantic_hash": "ef8c337cb9715d1321a142c12fec4c7c"
+  },
+  "recordatorios.js": {
+    "mtime": 1793315630.3220778,
+    "seen": 1793315867.8952138,
+    "ast_hash": "6b8d0c0d6e182f0d26e9c8b01fdd0a77",
+    "semantic_hash": "6b8d0c0d6e182f0d26e9c8b01fdd0a77"
+  },
+  "server.js": {
+    "mtime": 1793315630.3220778,
+    "seen": 1793315867.8952155,
+    "ast_hash": "3d2707bbb3866e3aec9d83c6c50dae3c",
+    "semantic_hash": "3d2707bbb3866e3aec9d83c6c50dae3c"
+  },
+  "shopify.js": {
+    "mtime": 1793315630.3220778,
+    "seen": 1793315867.8952174,
+    "ast_hash": "2682ddd824c048060ca4bf23bbdd3253",
+    "semantic_hash": "2682ddd824c048060ca4bf23bbdd3253"
+  },
+  "sync/matilde-sync.ejemplo.json": {
+    "mtime": 1793315630.3234756,
+    "seen": 1793315867.895219,
+    "ast_hash": "a03cf63d2636ff6c6363e1bf044e44d0",
+    "semantic_hash": "a03cf63d2636ff6c6363e1bf044e44d0"
+  },
+  "sync/matilde-sync.ps1": {
+    "mtime": 1793315630.3234756,
+    "seen": 1793315867.8952212,
+    "ast_hash": "67dff42600dbfefbb90da5cd7cbb2c68",
+    "semantic_hash": "67dff42600dbfefbb90da5cd7cbb2c68"
+  },
+  "conocimiento/contexto.md": {
+    "mtime": 1793315630.319026,
+    "seen": 1793315867.8952236,
+    "ast_hash": "7bfd105996fa619c2b2b8f080a085296",
+    "semantic_hash": "7bfd105996fa619c2b2b8f080a085296"
+  },
+  "conocimiento/tiadhe-fuerteventura.md": {
+    "mtime": 1793315630.320722,
+    "seen": 1793315867.895227,
+    "ast_hash": "7a14a3497ca807b134fa09126e664499",
+    "semantic_hash": "7a14a3497ca807b134fa09126e664499"
+  },
+  "conocimiento/tienda-asturfuerte.md": {
+    "mtime": 1793315630.320722,
+    "seen": 1793315867.8952289,
+    "ast_hash": "06479a6385d24a89970ed12c4501bd9d",
+    "semantic_hash": "06479a6385d24a89970ed12c4501bd9d"
+  },
+  "documentos/STS-485-2026-Union-Ereza-incentivos-hotel-Antigua.md": {
+    "mtime": 1793315630.320722,
+    "seen": 1793315867.8952308,
+    "ast_hash": "5287e8e35ee017601b29a7156d7bb18e",
+    "semantic_hash": "5287e8e35ee017601b29a7156d7bb18e"
+  },
+  "index.html": {
+    "mtime": 1793315630.320722,
+    "seen": 1793315867.8952324,
+    "ast_hash": "18c74411010ed2bc10124bb2dd46e338",
+    "semantic_hash": "18c74411010ed2bc10124bb2dd46e338"
+  },
+  "sync/LEEME.md": {
+    "mtime": 1793315630.3234756,
+    "seen": 1793315867.8952343,
+    "ast_hash": "c3acf863768c5555e6d693d757c91530",
+    "semantic_hash": "c3acf863768c5555e6d693d757c91530"
+  }
+}
