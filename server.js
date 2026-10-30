@@ -6,7 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const tls = require('tls');
 
-const VERSION = '2026-10-30e'; // se cambia en cada entrega para comprobar en /salud qué versión está desplegada
+const VERSION = '2026-10-30f'; // se cambia en cada entrega para comprobar en /salud qué versión está desplegada
 const PORT = process.env.PORT || 3000;
 const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
 const ACCESS_PIN = process.env.ACCESS_PIN || '';
@@ -18,6 +18,8 @@ const KNOWLEDGE_DIR = process.env.KNOWLEDGE_DIR || path.join(__dirname, 'conocim
 
 // Modo híbrido: si hay ANTHROPIC_API_KEY, Gemini oye y habla, y Claude piensa, busca en internet y lee documentos.
 const claude = require('./claude');
+// Investigar en segundo plano (Gemini Live NON_BLOCKING): sin silencios mientras busca. INVESTIGAR_ASINCRONO=0 para desactivarlo.
+let INVESTIGAR_ASINCRONO = (process.env.INVESTIGAR_ASINCRONO || '1') !== '0';
 console.log('Copiloto Live versión ' + VERSION);
 if (claude.enabled()) console.log('Cerebro Claude activo (' + claude.MODEL + '): ' + claude.diagnostico());
 else console.log('Cerebro Claude DESACTIVADO (todo lo resuelve Gemini): ' + claude.diagnostico());
@@ -290,6 +292,7 @@ function startSession(client, params) {
     if (historial.length > 3000) historial = historial.slice(-3000);
   }
   const usarClaude = claude.enabled();
+  const asincrono = usarClaude && INVESTIGAR_ASINCRONO; // si el modelo de voz no lo admite, se desactiva solo
   const siempre = docsSiempre();
   if (siempre) console.log('Sesión nueva con documentos al día incluidos (' + siempre.length + ' caracteres)');
 
@@ -300,14 +303,14 @@ function startSession(client, params) {
         responseModalities: ['AUDIO'],
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } }, languageCode: 'es-ES' },
       },
-      systemInstruction: { parts: [{ text: PERSONA[modo] + tratoRules() + instruccionesRules() + agendaRules() + agenda.resumenParaSesion(PREFS.citasAlEmpezar) + PEDIDOS_RULES + (shopify.enabled() ? shopify.RULES : '') + (usarClaude ? claude.RULES : docsRules()) + (KNOWLEDGE ? KNOWLEDGE_RULES + KNOWLEDGE : '') + siempre }] },
+      systemInstruction: { parts: [{ text: PERSONA[modo] + tratoRules() + instruccionesRules() + agendaRules() + agenda.resumenParaSesion(PREFS.citasAlEmpezar) + PEDIDOS_RULES + (shopify.enabled() ? shopify.RULES : '') + (usarClaude ? claude.RULES + (asincrono ? claude.RULES_ASINCRONO : claude.RULES_ESPERA) : docsRules()) + (KNOWLEDGE ? KNOWLEDGE_RULES + KNOWLEDGE : '') + siempre }] },
       realtimeInputConfig: { automaticActivityDetection: { disabled: false, endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH', silenceDurationMs: 500 } },
       inputAudioTranscription: {},
       outputAudioTranscription: {},
     },
   };
   setup.setup.tools = [];
-  if (usarClaude) setup.setup.tools.push(claude.TOOL); // Claude hace las búsquedas web y la consulta de documentos
+  if (usarClaude) setup.setup.tools.push(claude.tool(asincrono)); // Claude hace las búsquedas web y la consulta de documentos
   else {
     if (ENABLE_SEARCH) setup.setup.tools.push({ googleSearch: {} });
     if (DOCS.docs.length) setup.setup.tools.push(docsTool());
@@ -335,7 +338,7 @@ function startSession(client, params) {
       if (msg.toolCall) {
         // Google Search se resuelve en el lado de Google. consultar_documentos la resolvemos aquí; el resto se rechaza limpiamente.
         const calls = msg.toolCall.functionCalls || [];
-        Promise.all(calls.map(async c => {
+        const ejecutar = async c => {
           if (c.name === 'investigar') {
             const pregunta = String((c.args && c.args.pregunta) || '');
             sendText(client, { tipo: 'aviso', texto: 'Investigando: ' + pregunta });
@@ -435,10 +438,17 @@ function startSession(client, params) {
             return { id: c.id, name: c.name, response: { result } };
           }
           return { id: c.id, name: c.name, response: { result: 'no disponible' } };
-        })).then(responses => { if (!closed) gem.send({ toolResponse: { functionResponses: responses } }); });
+        };
+        // investigar en segundo plano: Matilde sigue hablando y la respuesta se le entrega cuando quede un hueco.
+        const enSegundoPlano = asincrono ? calls.filter(c => c.name === 'investigar') : [];
+        const resto = calls.filter(c => !enSegundoPlano.includes(c));
+        for (const c of enSegundoPlano) ejecutar(c).then(r => { if (!closed) { r.response.scheduling = 'WHEN_IDLE'; gem.send({ toolResponse: { functionResponses: [r] } }); } });
+        if (resto.length) Promise.all(resto.map(ejecutar)).then(responses => { if (!closed) gem.send({ toolResponse: { functionResponses: responses } }); });
       }
     },
-    reason => { if (!closed) { closed = true; sendText(client, { tipo: 'cerrado', motivo: reason }); try { client.end(); } catch (e) {} } }
+    reason => {
+      if (!ready && asincrono && INVESTIGAR_ASINCRONO) { INVESTIGAR_ASINCRONO = false; console.log('El modelo de voz no admite investigar en segundo plano (' + reason + '): se usa el modo con espera'); }
+      if (!closed) { closed = true; sendText(client, { tipo: 'cerrado', motivo: reason }); try { client.end(); } catch (e) {} } }
   );
 
   return {

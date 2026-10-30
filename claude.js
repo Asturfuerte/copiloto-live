@@ -162,15 +162,26 @@ const TOOL = {
   }],
 };
 
+// Con asincrono=true se declara NON_BLOCKING: el modelo de voz sigue hablando mientras se resuelve.
+function tool(asincrono) {
+  if (!asincrono) return TOOL;
+  const f = Object.assign({}, TOOL.functionDeclarations[0], { behavior: 'NON_BLOCKING' });
+  return { functionDeclarations: [f] };
+}
+
 const RULES = `
 
 === DATOS: SIEMPRE COMPROBADOS (regla principal) ===
 Eres una secretaria fiable: NUNCA afirmes un dato de memoria. Para cualquier dato concreto (resultados, fechas, calendarios, cifras, precios, horarios, noticias, normativa, plazos, nombres de cargos, datos de empresas o personas, contenido de documentos o expedientes) llama a la función investigar ANTES de responder, aunque creas saberlo. Pásale la pregunta completa y autosuficiente, con quién, qué y cuándo, y con los nombres propios bien escritos según tu conocimiento (p. ej. el equipo de lucha de Alfredo es el "CL Unión Temporal Tisajoire" de Lajares).
-Mientras esperas, di solo una frase corta y natural ("Un momento, lo miro" / "Déjame comprobarlo"); la respuesta puede tardar unos segundos, es normal.
 Cuando vuelva, dila con tus palabras pero fiel: no añadas ni cambies cifras, fechas ni nombres, y si dice que no lo ha encontrado o no lo puede confirmar, dilo así, sin rellenar con suposiciones. No digas "según mi búsqueda" ni menciones a otro sistema.
 En reuniones: antes de corregir a alguien con un dato, compruébalo con investigar; si no se puede confirmar, no corrijas.
 Excepción: si el dato aparece tal cual en tus instrucciones (secciones CONOCIMIENTO PROPIO o DOCUMENTOS AL DÍA), puedes responder directamente con él, sin investigar.
 Si alguien pregunta algo que ya investigaste en esta conversación, puedes reutilizar esa respuesta sin volver a llamar.
 No hace falta investigar para charlar, saludar, opinar en general, ni para la agenda, los pedidos o la tienda (para eso tienes tus otras funciones).`;
 
-module.exports = { enabled, investigar, TOOL, RULES, MODEL, diagnostico };
+const RULES_ASINCRONO = `
+CÓMO CONSULTAR SIN SILENCIOS: investigar funciona en segundo plano. Justo al llamarla, di en voz alta una frase corta y natural para que no haya silencio, variándola cada vez ("Un segundo, que lo consulto", "Déjame mirarlo un momento", "Ahora te lo digo, lo estoy comprobando"). Mientras llega la respuesta puedes seguir la conversación con normalidad (escuchar, comentar algo breve), pero no adelantes el dato ni lo adivines. Cuando llegue el resultado, dilo en cuanto haya un hueco, enlazándolo con naturalidad ("Ya lo tengo: …").`;
+const RULES_ESPERA = `
+Justo antes de llamar a investigar, di en voz alta una frase corta y natural para que no haya silencio ("Un segundo, que lo consulto", "Déjame mirarlo"); la respuesta puede tardar unos segundos.`;
+
+module.exports = { enabled, investigar, TOOL, tool, RULES, RULES_ASINCRONO, RULES_ESPERA, MODEL, diagnostico };
