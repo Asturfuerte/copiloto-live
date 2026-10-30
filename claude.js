@@ -28,8 +28,8 @@ function diagnostico() {
   return 'no hay ninguna variable con una clave de Anthropic. Variables parecidas que sí llegan: ' + (ENCONTRADA.parecidas.join(', ') || 'ninguna');
 }
 const MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-5-5';
-const MAX_TOKENS = Number(process.env.CLAUDE_MAX_TOKENS || 1200);
-const TIMEOUT_MS = Number(process.env.CLAUDE_TIMEOUT_MS || 45000);
+const MAX_TOKENS = Number(process.env.CLAUDE_MAX_TOKENS || 900);
+const TIMEOUT_MS = Number(process.env.CLAUDE_TIMEOUT_MS || 40000);
 const MAX_VUELTAS = 6; // tope de idas y vueltas con herramientas por pregunta
 
 function enabled() { return !!KEY; }
@@ -57,7 +57,7 @@ function post(body, timeoutMs) {
 // Herramientas: búsqueda web (la ejecuta Anthropic) + documentos del cliente (las ejecutamos nosotros).
 function tools(docNames) {
   const t = [{
-    type: 'web_search_20250305', name: 'web_search', max_uses: 4,
+    type: 'web_search_20250305', name: 'web_search', max_uses: 3,
     user_location: { type: 'approximate', city: 'La Oliva', region: 'Canarias', country: 'ES', timezone: 'Atlantic/Canary' },
   }];
   if (docNames.length) {
@@ -80,34 +80,52 @@ function tools(docNames) {
   return t;
 }
 
-function systemPrompt(ctx) {
-  return `Eres el cerebro de "${ctx.nombre}", una asistente de voz en español de España. Otra parte del sistema escucha la conversación y habla; tú recibes las preguntas que necesitan pensar, buscar en internet o consultar documentos, y devuelves la respuesta que ella dirá en voz alta.
+// Instrucciones fijas (se guardan en la caché de Anthropic: las preguntas siguientes no las vuelven a procesar,
+// lo que hace la respuesta más rápida y barata). Lo que cambia (hora, conversación) va en el mensaje.
+function systemBlocks(ctx) {
+  const fijo = `Eres el investigador de "${ctx.nombre}", la secretaria personal de voz de Alfredo, en español de España. Otra parte del sistema escucha la conversación (a veces una reunión con varias personas) y habla; tú recibes las preguntas que necesitan datos y devuelves la respuesta que ella dirá en voz alta. Alfredo vive en Lajares (La Oliva, Fuerteventura, Canarias).
 
-Ahora mismo es ${ctx.ahora} (hora de Canarias). El usuario principal es Alfredo; vive en Lajares (La Oliva, Fuerteventura).
+TU PRIORIDAD ES ACERTAR:
+- Datos actuales o que pueden haber cambiado (resultados, noticias, horarios, precios, tiempo, normativa vigente, quién ocupa un cargo, datos de empresas o personas públicas): búscalos SIEMPRE en internet antes de responder, aunque creas saberlos. Contrasta con más de una fuente si el dato es importante o las fuentes no coinciden.
+- Datos que puedan estar en los documentos del usuario (expedientes, contratos, sentencias, escrituras, informes, calendarios y plantillas guardados): consúltalos y básate solo en lo que digan. Si el dato está en "DOCUMENTOS AL DÍA", úsalo directamente.
+- Si no encuentras el dato o las fuentes no son fiables, dilo claramente en una frase ("No lo he encontrado" / "No lo puedo confirmar"). Nunca inventes cifras, fechas, nombres, resultados ni cláusulas. Si algo es una deducción tuya, dilo.
+- Sé eficiente: haz solo las búsquedas necesarias; con una o dos suele bastar.
 
-CÓMO RESPONDER (tu texto se va a leer en voz alta):
-- Texto hablado y natural: sin listas, sin viñetas, sin títulos, sin markdown, sin enlaces ni URLs, sin citar fuentes con corchetes.
-- Ve al grano: primero la respuesta, luego el detalle imprescindible. Normalmente entre una y cinco frases; más solo si la pregunta lo exige.
-- Escribe los números y marcadores como se dicen ("doce a diez", "el sábado treinta y uno a las ocho y media de la tarde").
-- Datos actuales (resultados, horarios, precios, noticias, quién ocupa un cargo): búscalos en internet antes de responder.
-- Datos que puedan estar en los documentos del usuario: consúltalos antes de responder y básate solo en lo que devuelvan.
-- Si no encuentras algo, dilo claramente en una frase. Nunca inventes cifras, fechas, resultados ni cláusulas.
-- No menciones que eres otro sistema ni que te han consultado: responde como si hablara ella directamente.
-${ctx.conocimiento ? '\n=== CONOCIMIENTO PROPIO (información fiable para estas sesiones) ===\n' + ctx.conocimiento : ''}`;
+CÓMO RESPONDER (tu texto se lee en voz alta):
+- Texto hablado y natural: sin listas, viñetas, títulos, markdown, enlaces ni URLs, y sin corchetes de citas.
+- Primero la respuesta directa; luego el detalle imprescindible. Normalmente de una a cuatro frases; más solo si la pregunta lo exige.
+- Escribe números y marcadores como se dicen ("doce a once", "el sábado a las ocho y media de la tarde").
+- Si la fuente importa (por ejemplo una norma o un dato discutido), nómbrala de palabra ("según el BOE…", "según la federación…").
+- No menciones que eres otro sistema: responde como si hablara ella.
+${ctx.conocimiento ? '\n=== CONOCIMIENTO PROPIO (información fiable sobre Alfredo y su entorno) ===\n' + ctx.conocimiento : ''}${ctx.siempre || ''}`;
+  return [{ type: 'text', text: fijo, cache_control: { type: 'ephemeral' } }];
 }
 
-// Pregunta a Claude con bucle de herramientas. ctx: { nombre, ahora, conocimiento, conversacion, docs(), buscar(p, d), leer(d, n), log }
+const MAX_DOC = 8000;    // tope de texto por consulta de documentos (antes se mandaba muchísimo más y era lento)
+const MAX_LEER = 14000;  // tope por parte leída de un documento
+
+// Pregunta a Claude con bucle de herramientas.
+// ctx: { nombre, ahora, conocimiento, siempre, conversacion, docs(), buscar(p, d), leer(d, n), log }
 async function investigar(pregunta, ctx) {
   const t0 = Date.now();
+  const log = ctx.log || (() => {});
   const docNames = ctx.docs();
-  const contenido = (ctx.conversacion ? 'Lo último que se ha hablado (transcripción automática, puede tener errores):\n' + ctx.conversacion + '\n\n' : '') + 'Pregunta o tarea: ' + pregunta;
+  const contenido = 'Ahora: ' + ctx.ahora + ' (hora de Canarias).\n\n'
+    + (ctx.conversacion ? 'Lo último que se ha hablado (transcripción automática; los nombres propios pueden venir mal escritos):\n' + ctx.conversacion + '\n\n' : '')
+    + 'Pregunta: ' + pregunta;
   const messages = [{ role: 'user', content: contenido }];
-  const base = { model: MODEL, max_tokens: MAX_TOKENS, system: systemPrompt(ctx), tools: tools(docNames) };
+  const base = { model: MODEL, max_tokens: MAX_TOKENS, system: systemBlocks(ctx), tools: tools(docNames) };
+  let tokens = { entrada: 0, cache: 0, salida: 0 };
   for (let vuelta = 0; vuelta < MAX_VUELTAS; vuelta++) {
     const quedan = TIMEOUT_MS - (Date.now() - t0);
     if (quedan < 3000) break;
     const r = await post(Object.assign({}, base, { messages }), quedan);
     const content = r.content || [];
+    if (r.usage) { tokens.entrada += r.usage.input_tokens || 0; tokens.cache += r.usage.cache_read_input_tokens || 0; tokens.salida += r.usage.output_tokens || 0; }
+    for (const b of content) {
+      if (b.type === 'server_tool_use' && b.name === 'web_search') log('  Claude busca en internet: ' + JSON.stringify((b.input || {}).query || ''));
+      if (b.type === 'web_search_tool_result' && b.content && !Array.isArray(b.content)) log('  Búsqueda web con error: ' + JSON.stringify(b.content).slice(0, 160));
+    }
     if (r.stop_reason === 'tool_use') {
       messages.push({ role: 'assistant', content });
       const resultados = [];
@@ -115,22 +133,23 @@ async function investigar(pregunta, ctx) {
         if (b.type !== 'tool_use') continue;
         let out;
         try {
-          if (b.name === 'consultar_documentos') out = await ctx.buscar(String(b.input.pregunta || ''), b.input.documento ? String(b.input.documento) : '');
-          else if (b.name === 'leer_documento') out = ctx.leer(String(b.input.documento || ''), Number(b.input.parte) || 1);
+          if (b.name === 'consultar_documentos') out = String(await ctx.buscar(String(b.input.pregunta || ''), b.input.documento ? String(b.input.documento) : '')).slice(0, MAX_DOC);
+          else if (b.name === 'leer_documento') out = String(ctx.leer(String(b.input.documento || ''), Number(b.input.parte) || 1)).slice(0, MAX_LEER);
           else out = 'Herramienta no disponible.';
         } catch (e) { out = 'Error: ' + e.message; }
-        if (ctx.log) ctx.log('  Claude -> ' + b.name + '(' + JSON.stringify(b.input).slice(0, 80) + ')');
-        resultados.push({ type: 'tool_result', tool_use_id: b.id, content: String(out).slice(0, 60000) });
+        log('  Claude -> ' + b.name + '(' + JSON.stringify(b.input).slice(0, 100) + ')');
+        resultados.push({ type: 'tool_result', tool_use_id: b.id, content: out });
       }
       messages.push({ role: 'user', content: resultados });
       continue;
     }
     if (r.stop_reason === 'pause_turn') { messages.push({ role: 'assistant', content }); continue; } // búsqueda web larga: se reanuda
     const texto = content.filter(b => b.type === 'text').map(b => b.text).join('').trim();
-    if (ctx.log) ctx.log('Claude respondió en ' + (Date.now() - t0) + ' ms (' + (r.usage ? r.usage.input_tokens + '+' + r.usage.output_tokens + ' tokens' : '') + ')');
+    log('Claude respondió en ' + (Date.now() - t0) + ' ms (tokens: ' + tokens.entrada + ' nuevos + ' + tokens.cache + ' de caché + ' + tokens.salida + ' de salida)');
     return texto || 'No he encontrado una respuesta clara.';
   }
-  return 'No he podido terminar de mirarlo a tiempo; dímelo otra vez en un momento.';
+  log('Claude no terminó a tiempo (' + (Date.now() - t0) + ' ms)');
+  return 'No he podido terminar de comprobarlo a tiempo. Dile al usuario que no lo has podido confirmar y ofrece volver a mirarlo.';
 }
 
 const TOOL = {
@@ -145,9 +164,13 @@ const TOOL = {
 
 const RULES = `
 
-=== PENSAR Y BUSCAR ===
-Tienes la función investigar: es tu manera de buscar en internet, consultar los documentos del usuario y pensar las respuestas difíciles. Úsala SIEMPRE antes de responder cuando haga falta un dato actual (resultados, calendarios, noticias, horarios, precios), algo de los documentos del usuario, normativa o cualquier dato del que no estés segura. No respondas de memoria esas cosas.
-Antes de llamarla, di solo una frase muy corta y natural ("Un momento, lo miro"). Cuando vuelva la respuesta, dila con tus palabras pero fiel a lo que devuelve: no añadas datos, no cambies cifras ni fechas, no digas "según mi búsqueda" ni menciones que has consultado a otro sistema.
-Para charlar, saludar, la agenda, los pedidos o la tienda NO hace falta: usa tus otras funciones o responde directamente.`;
+=== DATOS: SIEMPRE COMPROBADOS (regla principal) ===
+Eres una secretaria fiable: NUNCA afirmes un dato de memoria. Para cualquier dato concreto (resultados, fechas, calendarios, cifras, precios, horarios, noticias, normativa, plazos, nombres de cargos, datos de empresas o personas, contenido de documentos o expedientes) llama a la función investigar ANTES de responder, aunque creas saberlo. Pásale la pregunta completa y autosuficiente, con quién, qué y cuándo, y con los nombres propios bien escritos según tu conocimiento (p. ej. el equipo de lucha de Alfredo es el "CL Unión Temporal Tisajoire" de Lajares).
+Mientras esperas, di solo una frase corta y natural ("Un momento, lo miro" / "Déjame comprobarlo"); la respuesta puede tardar unos segundos, es normal.
+Cuando vuelva, dila con tus palabras pero fiel: no añadas ni cambies cifras, fechas ni nombres, y si dice que no lo ha encontrado o no lo puede confirmar, dilo así, sin rellenar con suposiciones. No digas "según mi búsqueda" ni menciones a otro sistema.
+En reuniones: antes de corregir a alguien con un dato, compruébalo con investigar; si no se puede confirmar, no corrijas.
+Excepción: si el dato aparece tal cual en tus instrucciones (secciones CONOCIMIENTO PROPIO o DOCUMENTOS AL DÍA), puedes responder directamente con él, sin investigar.
+Si alguien pregunta algo que ya investigaste en esta conversación, puedes reutilizar esa respuesta sin volver a llamar.
+No hace falta investigar para charlar, saludar, opinar en general, ni para la agenda, los pedidos o la tienda (para eso tienes tus otras funciones).`;
 
 module.exports = { enabled, investigar, TOOL, RULES, MODEL, diagnostico };

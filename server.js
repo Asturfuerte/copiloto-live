@@ -6,7 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const tls = require('tls');
 
-const VERSION = '2026-10-30d'; // se cambia en cada entrega para comprobar en /salud qué versión está desplegada
+const VERSION = '2026-10-30e'; // se cambia en cada entrega para comprobar en /salud qué versión está desplegada
 const PORT = process.env.PORT || 3000;
 const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
 const ACCESS_PIN = process.env.ACCESS_PIN || '';
@@ -346,6 +346,7 @@ function startSession(client, params) {
                 nombre: AGENT_NAME,
                 ahora: require('./recordatorios').ahora().texto,
                 conocimiento: KNOWLEDGE,
+                siempre,
                 conversacion: historial.trim(),
                 docs: () => DOCS.docs.map(d => d.name),
                 buscar: (p, d) => documentos.answerAsync(DOCS, p, GEMINI_KEY, 8, d),
