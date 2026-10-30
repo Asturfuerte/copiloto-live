@@ -4,7 +4,29 @@
 // Sin dependencias: llamada HTTPS directa a la API de mensajes de Anthropic.
 const https = require('https');
 
-const KEY = process.env.ANTHROPIC_API_KEY || '';
+// La clave se busca de forma tolerante: nombre exacto, nombres alternativos, espacios o comillas de más,
+// o cualquier variable cuyo valor sea una clave de Anthropic (sk-ant-…). Nunca se escribe el valor en el log.
+function limpiar(v) { return String(v || '').trim().replace(/^["']|["']$/g, '').trim(); }
+function buscarClave() {
+  const env = process.env;
+  const nombres = Object.keys(env);
+  const preferidos = ['ANTHROPIC_API_KEY', 'CLAUDE_API_KEY', 'ANTHROPIC_KEY', 'CLAUDE_KEY'];
+  for (const p of preferidos) {
+    const n = nombres.find(x => x.trim().toUpperCase() === p);
+    if (n && limpiar(env[n])) return { clave: limpiar(env[n]), origen: JSON.stringify(n) };
+  }
+  const porNombre = nombres.find(x => /ANTHROPIC|CLAUDE/i.test(x) && /^sk-ant-/.test(limpiar(env[x])));
+  if (porNombre) return { clave: limpiar(env[porNombre]), origen: JSON.stringify(porNombre) };
+  const porValor = nombres.find(x => /^sk-ant-/.test(limpiar(env[x])));
+  if (porValor) return { clave: limpiar(env[porValor]), origen: JSON.stringify(porValor) };
+  return { clave: '', origen: '', parecidas: nombres.filter(x => /ANTHROPIC|CLAUDE|API_KEY/i.test(x)).map(x => JSON.stringify(x) + (env[x] ? '' : ' (vacía)')) };
+}
+const ENCONTRADA = buscarClave();
+const KEY = ENCONTRADA.clave;
+function diagnostico() {
+  if (KEY) return 'clave leída de la variable ' + ENCONTRADA.origen + ' (empieza por ' + KEY.slice(0, 10) + '…, ' + KEY.length + ' caracteres)';
+  return 'no hay ninguna variable con una clave de Anthropic. Variables parecidas que sí llegan: ' + (ENCONTRADA.parecidas.join(', ') || 'ninguna');
+}
 const MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-5-5';
 const MAX_TOKENS = Number(process.env.CLAUDE_MAX_TOKENS || 1200);
 const TIMEOUT_MS = Number(process.env.CLAUDE_TIMEOUT_MS || 45000);
@@ -128,4 +150,4 @@ Tienes la función investigar: es tu manera de buscar en internet, consultar los
 Antes de llamarla, di solo una frase muy corta y natural ("Un momento, lo miro"). Cuando vuelva la respuesta, dila con tus palabras pero fiel a lo que devuelve: no añadas datos, no cambies cifras ni fechas, no digas "según mi búsqueda" ni menciones que has consultado a otro sistema.
 Para charlar, saludar, la agenda, los pedidos o la tienda NO hace falta: usa tus otras funciones o responde directamente.`;
 
-module.exports = { enabled, investigar, TOOL, RULES, MODEL };
+module.exports = { enabled, investigar, TOOL, RULES, MODEL, diagnostico };
