@@ -6,7 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const tls = require('tls');
 
-const VERSION = '2026-10-30a'; // se cambia en cada entrega para comprobar en /salud qué versión está desplegada
+const VERSION = '2026-10-30b'; // se cambia en cada entrega para comprobar en /salud qué versión está desplegada
 const PORT = process.env.PORT || 3000;
 const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
 const ACCESS_PIN = process.env.ACCESS_PIN || '';
@@ -18,7 +18,9 @@ const KNOWLEDGE_DIR = process.env.KNOWLEDGE_DIR || path.join(__dirname, 'conocim
 
 // Modo híbrido: si hay ANTHROPIC_API_KEY, Gemini oye y habla, y Claude piensa, busca en internet y lee documentos.
 const claude = require('./claude');
+console.log('Copiloto Live versión ' + VERSION);
 if (claude.enabled()) console.log('Cerebro Claude activo (' + claude.MODEL + '): búsquedas y documentos los resuelve Claude');
+else console.log('Cerebro Claude DESACTIVADO: falta la variable ANTHROPIC_API_KEY (todo lo resuelve Gemini)');
 
 const INDEX = Buffer.from(fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8').split('__AGENT_NAME__').join(AGENT_NAME.replace(/[<>&"]/g, '')));
 const PUBLIC_DIR = path.join(__dirname, 'public');
