@@ -6,7 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const tls = require('tls');
 
-const VERSION = '2026-10-27c'; // se cambia en cada entrega para comprobar en /salud qué versión está desplegada
+const VERSION = '2026-10-30a'; // se cambia en cada entrega para comprobar en /salud qué versión está desplegada
 const PORT = process.env.PORT || 3000;
 const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
 const ACCESS_PIN = process.env.ACCESS_PIN || '';
@@ -15,6 +15,10 @@ const LIVE_VOICE = process.env.LIVE_VOICE || 'Aoede';
 const ENABLE_SEARCH = (process.env.ENABLE_SEARCH || '1') !== '0';
 const AGENT_NAME = process.env.AGENT_NAME || 'Claude';
 const KNOWLEDGE_DIR = process.env.KNOWLEDGE_DIR || path.join(__dirname, 'conocimiento');
+
+// Modo híbrido: si hay ANTHROPIC_API_KEY, Gemini oye y habla, y Claude piensa, busca en internet y lee documentos.
+const claude = require('./claude');
+if (claude.enabled()) console.log('Cerebro Claude activo (' + claude.MODEL + '): búsquedas y documentos los resuelve Claude');
 
 const INDEX = Buffer.from(fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8').split('__AGENT_NAME__').join(AGENT_NAME.replace(/[<>&"]/g, '')));
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -257,6 +261,14 @@ function startSession(client, params) {
   const voice = params.voz || LIVE_VOICE;
   let gem = null; let ready = false; let closed = false;
   const pending = [];
+  // Últimos minutos de conversación (transcripción), para que Claude entienda preguntas como "¿y el sábado?"
+  let historial = ''; let ultimoHablante = '';
+  function anotar(quien, texto) {
+    if (quien !== ultimoHablante) { historial += '\n' + quien + ': '; ultimoHablante = quien; }
+    historial += texto;
+    if (historial.length > 3000) historial = historial.slice(-3000);
+  }
+  const usarClaude = claude.enabled();
 
   const setup = {
     setup: {
@@ -265,15 +277,18 @@ function startSession(client, params) {
         responseModalities: ['AUDIO'],
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } }, languageCode: 'es-ES' },
       },
-      systemInstruction: { parts: [{ text: PERSONA[modo] + tratoRules() + instruccionesRules() + agendaRules() + agenda.resumenParaSesion(PREFS.citasAlEmpezar) + PEDIDOS_RULES + (shopify.enabled() ? shopify.RULES : '') + docsRules() + (KNOWLEDGE ? KNOWLEDGE_RULES + KNOWLEDGE : '') }] },
+      systemInstruction: { parts: [{ text: PERSONA[modo] + tratoRules() + instruccionesRules() + agendaRules() + agenda.resumenParaSesion(PREFS.citasAlEmpezar) + PEDIDOS_RULES + (shopify.enabled() ? shopify.RULES : '') + (usarClaude ? claude.RULES : docsRules()) + (KNOWLEDGE ? KNOWLEDGE_RULES + KNOWLEDGE : '') }] },
       realtimeInputConfig: { automaticActivityDetection: { disabled: false, endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH', silenceDurationMs: 500 } },
       inputAudioTranscription: {},
       outputAudioTranscription: {},
     },
   };
   setup.setup.tools = [];
-  if (ENABLE_SEARCH) setup.setup.tools.push({ googleSearch: {} });
-  if (DOCS.docs.length) setup.setup.tools.push(docsTool());
+  if (usarClaude) setup.setup.tools.push(claude.TOOL); // Claude hace las búsquedas web y la consulta de documentos
+  else {
+    if (ENABLE_SEARCH) setup.setup.tools.push({ googleSearch: {} });
+    if (DOCS.docs.length) setup.setup.tools.push(docsTool());
+  }
   setup.setup.tools.push(AGENDA_TOOL);
   setup.setup.tools.push(PEDIDOS_TOOL);
   if (shopify.enabled()) setup.setup.tools.push(shopify.TOOL);
@@ -283,12 +298,12 @@ function startSession(client, params) {
     () => { gem.send(setup); },
     raw => {
       let msg; try { msg = JSON.parse(raw.toString()); } catch (e) { return; }
-      if (msg.setupComplete) { ready = true; sendText(client, { tipo: 'listo', modelo: LIVE_MODEL, voz: voice, nombre: AGENT_NAME, conocimiento: KNOWLEDGE.length, documentos: DOCS.docs.length }); for (const p of pending) gem.send(p); pending.length = 0; return; }
+      if (msg.setupComplete) { ready = true; sendText(client, { tipo: 'listo', modelo: LIVE_MODEL, voz: voice, nombre: AGENT_NAME, conocimiento: KNOWLEDGE.length, documentos: DOCS.docs.length, cerebro: usarClaude ? claude.MODEL : '' }); for (const p of pending) gem.send(p); pending.length = 0; return; }
       const sc = msg.serverContent;
       if (sc) {
         if (sc.interrupted) sendText(client, { tipo: 'interrumpido' });
-        if (sc.inputTranscription && sc.inputTranscription.text) sendText(client, { tipo: 'oido', texto: sc.inputTranscription.text });
-        if (sc.outputTranscription && sc.outputTranscription.text) sendText(client, { tipo: 'dicho', texto: sc.outputTranscription.text });
+        if (sc.inputTranscription && sc.inputTranscription.text) { sendText(client, { tipo: 'oido', texto: sc.inputTranscription.text }); anotar('Persona', sc.inputTranscription.text); }
+        if (sc.outputTranscription && sc.outputTranscription.text) { sendText(client, { tipo: 'dicho', texto: sc.outputTranscription.text }); anotar(AGENT_NAME, sc.outputTranscription.text); }
         const parts = (sc.modelTurn && sc.modelTurn.parts) || [];
         for (const p of parts) if (p.inlineData && p.inlineData.data) sendBin(client, Buffer.from(p.inlineData.data, 'base64'));
         if (sc.turnComplete) sendText(client, { tipo: 'fin_turno' });
@@ -298,6 +313,28 @@ function startSession(client, params) {
         // Google Search se resuelve en el lado de Google. consultar_documentos la resolvemos aquí; el resto se rechaza limpiamente.
         const calls = msg.toolCall.functionCalls || [];
         Promise.all(calls.map(async c => {
+          if (c.name === 'investigar') {
+            const pregunta = String((c.args && c.args.pregunta) || '');
+            sendText(client, { tipo: 'aviso', texto: 'Investigando: ' + pregunta });
+            console.log('investigar("' + pregunta + '")');
+            let result;
+            try {
+              result = await claude.investigar(pregunta, {
+                nombre: AGENT_NAME,
+                ahora: require('./recordatorios').ahora().texto,
+                conocimiento: KNOWLEDGE,
+                conversacion: historial.trim(),
+                docs: () => DOCS.docs.map(d => d.name),
+                buscar: (p, d) => documentos.answerAsync(DOCS, p, GEMINI_KEY, 8, d),
+                leer: (d, n) => documentos.readDocument(DOCS, d, n),
+                log: console.log,
+              });
+            } catch (e) {
+              console.log('Claude falló: ' + e.message);
+              result = 'Ahora mismo no he podido consultarlo (' + e.message.slice(0, 80) + '). Díselo al usuario en una frase y ofrece intentarlo de nuevo.';
+            }
+            return { id: c.id, name: c.name, response: { result } };
+          }
           if (c.name === 'consultar_documentos') {
             const pregunta = String((c.args && c.args.pregunta) || '');
             const documento = c.args && c.args.documento ? String(c.args.documento) : '';
@@ -539,7 +576,7 @@ const server = http.createServer((req, res) => {
     const f = path.join(PUBLIC_DIR, req.url.slice(1));
     if (fs.existsSync(f)) { res.writeHead(200, { 'content-type': MIME[path.extname(f)] || 'application/octet-stream', 'cache-control': 'public, max-age=86400' }); return res.end(fs.readFileSync(f)); }
   }
-  if (req.method === 'GET' && req.url === '/salud') return send(res, 200, { ok: true, version: VERSION, clave: !!GEMINI_KEY, modelo: LIVE_MODEL, voz: LIVE_VOICE, busqueda: ENABLE_SEARCH, nombre: AGENT_NAME, tienda: shopify.enabled(), citas_al_empezar: PREFS.citasAlEmpezar, instrucciones: (PREFS.instrucciones || []).length, conocimiento_chars: KNOWLEDGE.length, busqueda_semantica: !!DOCS.embedded, agenda_pendientes: agenda.pendientes().length, documentos: DOCS.docs.map(d => ({ nombre: d.name, fragmentos: d.chunks })) });
+  if (req.method === 'GET' && req.url === '/salud') return send(res, 200, { ok: true, version: VERSION, clave: !!GEMINI_KEY, modelo: LIVE_MODEL, cerebro_claude: claude.enabled() ? claude.MODEL : false, voz: LIVE_VOICE, busqueda: ENABLE_SEARCH, nombre: AGENT_NAME, tienda: shopify.enabled(), citas_al_empezar: PREFS.citasAlEmpezar, instrucciones: (PREFS.instrucciones || []).length, conocimiento_chars: KNOWLEDGE.length, busqueda_semantica: !!DOCS.embedded, agenda_pendientes: agenda.pendientes().length, documentos: DOCS.docs.map(d => ({ nombre: d.name, fragmentos: d.chunks })) });
 
   const u = new URL(req.url, 'http://x');
 

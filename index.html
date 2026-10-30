@@ -276,13 +276,13 @@ input[type=password] { width: 100%; }
     ws.onmessage = ev => {
       if (ev.data instanceof ArrayBuffer) { playChunk(ev.data); return; }
       let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
-      if (m.tipo === 'listo') { status('on', 'Escuchando'); if (m.nombre) window.agentName = m.nombre; $('info').textContent = 'Modelo ' + m.modelo + ' · voz ' + m.voz + (m.nombre ? ' · responde a "' + m.nombre + '"' : '') + (m.conocimiento ? ' · con conocimiento' : '') + (m.documentos ? ' · ' + m.documentos + ' documento' + (m.documentos > 1 ? 's' : '') : ''); }
+      if (m.tipo === 'listo') { status('on', 'Escuchando'); if (m.nombre) window.agentName = m.nombre; $('info').textContent = 'Modelo ' + m.modelo + ' · voz ' + m.voz + (m.nombre ? ' · responde a "' + m.nombre + '"' : '') + (m.conocimiento ? ' · con conocimiento' : '') + (m.documentos ? ' · ' + m.documentos + ' documento' + (m.documentos > 1 ? 's' : '') : '') + (m.cerebro ? ' · piensa con ' + m.cerebro : ''); }
       else if (m.tipo === 'oido') onHeard(m.texto);
       else if (m.tipo === 'dicho') onSaid(m.texto);
       else if (m.tipo === 'interrumpido') { stopPlayback(); status('on', 'Escuchando'); }
       else if (m.tipo === 'fin_turno') { endTurn(); setTimeout(() => { if (running && !scheduled.length) status('on', 'Escuchando'); }, 300); }
       else if (m.tipo === 'agenda') { loadAgenda(); line('sys').textContent = (m.accion === 'nuevo' ? '📅 Apuntado: ' : m.accion === 'hecho' ? '✅ Hecho: ' : '✏️ Cambiado: ') + m.item.texto + (m.item.fecha ? ' (' + m.item.fecha + (m.item.hora ? ' ' + m.item.hora : '') + ')' : ''); }
-      else if (m.tipo === 'aviso') { if (/^Consultando documentos/.test(m.texto)) line('sys').textContent = '📄 ' + m.texto; else if (/^Consultando tienda/.test(m.texto)) line('sys').textContent = '🛒 ' + m.texto; else showErr(m.texto); }
+      else if (m.tipo === 'aviso') { if (/^Consultando documentos/.test(m.texto)) line('sys').textContent = '📄 ' + m.texto; else if (/^Consultando tienda/.test(m.texto)) line('sys').textContent = '🛒 ' + m.texto; else if (/^Investigando/.test(m.texto)) line('sys').textContent = '🔎 ' + m.texto; else showErr(m.texto); }
       else if (m.tipo === 'cerrado') { showErr(m.motivo || 'Sesión cerrada'); if (running) { stopAudio(); scheduleReconnect(800); } }
     };
     ws.onerror = () => showErr('No se pudo conectar. Vuelve a desbloquear la app.');
