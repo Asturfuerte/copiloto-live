@@ -6,7 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const tls = require('tls');
 
-const VERSION = '2026-10-30c'; // se cambia en cada entrega para comprobar en /salud qué versión está desplegada
+const VERSION = '2026-10-30d'; // se cambia en cada entrega para comprobar en /salud qué versión está desplegada
 const PORT = process.env.PORT || 3000;
 const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
 const ACCESS_PIN = process.env.ACCESS_PIN || '';
@@ -126,6 +126,25 @@ function docsList() {
     list.push({ nombre: file.replace(DOCS_EXT, ''), fichero: file, fragmentos: 0, bytes: st.size || 0, fecha: st.mtime || null, ocr: true, procesando: !p.error, progreso: p.total ? p.pagina + '/' + p.total : 'preparando', error: p.error });
   }
   return list;
+}
+
+// Documentos "siempre presentes": se leen al abrir cada sesión (así recogen lo que suba Matilde Sync sin redesplegar)
+// y van enteros en las instrucciones, para no depender de que el modelo decida consultarlos.
+// DOCS_SIEMPRE = expresión regular sobre el nombre del fichero (md/txt). Vacío para desactivarlo.
+const DOCS_SIEMPRE = process.env.DOCS_SIEMPRE === undefined ? '^calendario-lucha' : process.env.DOCS_SIEMPRE;
+function docsSiempre() {
+  if (!DOCS_SIEMPRE) return '';
+  let re; try { re = new RegExp(DOCS_SIEMPRE, 'i'); } catch (e) { return ''; }
+  try {
+    const files = fs.readdirSync(DOCS_DIR).filter(f => /\.(md|txt)$/i.test(f) && re.test(f)).sort();
+    const txt = files.map(f => '--- ' + f + ' ---\n' + fs.readFileSync(path.join(DOCS_DIR, f), 'utf8').slice(0, 40000)).join('\n\n');
+    return txt ? `
+
+=== DOCUMENTOS AL DÍA (léelos antes de responder sobre estos temas) ===
+Esto es información fiable y actualizada. Si te preguntan por algo que aparece aquí (resultados, calendario, partidos ya jugados), responde con estos datos. Nunca digas que algo no ha ocurrido o que no hay datos sin comprobarlo aquí primero.
+
+` + txt : '';
+  } catch (e) { return ''; }
 }
 
 const KNOWLEDGE_RULES = `
@@ -271,6 +290,8 @@ function startSession(client, params) {
     if (historial.length > 3000) historial = historial.slice(-3000);
   }
   const usarClaude = claude.enabled();
+  const siempre = docsSiempre();
+  if (siempre) console.log('Sesión nueva con documentos al día incluidos (' + siempre.length + ' caracteres)');
 
   const setup = {
     setup: {
@@ -279,7 +300,7 @@ function startSession(client, params) {
         responseModalities: ['AUDIO'],
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } }, languageCode: 'es-ES' },
       },
-      systemInstruction: { parts: [{ text: PERSONA[modo] + tratoRules() + instruccionesRules() + agendaRules() + agenda.resumenParaSesion(PREFS.citasAlEmpezar) + PEDIDOS_RULES + (shopify.enabled() ? shopify.RULES : '') + (usarClaude ? claude.RULES : docsRules()) + (KNOWLEDGE ? KNOWLEDGE_RULES + KNOWLEDGE : '') }] },
+      systemInstruction: { parts: [{ text: PERSONA[modo] + tratoRules() + instruccionesRules() + agendaRules() + agenda.resumenParaSesion(PREFS.citasAlEmpezar) + PEDIDOS_RULES + (shopify.enabled() ? shopify.RULES : '') + (usarClaude ? claude.RULES : docsRules()) + (KNOWLEDGE ? KNOWLEDGE_RULES + KNOWLEDGE : '') + siempre }] },
       realtimeInputConfig: { automaticActivityDetection: { disabled: false, endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH', silenceDurationMs: 500 } },
       inputAudioTranscription: {},
       outputAudioTranscription: {},
